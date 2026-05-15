@@ -146,7 +146,7 @@ Configured in both `tsconfig.app.json` and `vite.config.ts`. Use these instead o
 - No way to cancel or restart a round mid-play other than reloading the page.
 - 搶槓, 九蓮寶燈, multi-winner discards still deferred from Phase 3.
 
-**Phase 5 — AI opponents: ✅ complete** (2026-05-15). 139 passing tests across 18 files.
+**Phase 5 — AI opponents: ✅ complete** (2026-05-15).
 
 **Shanten** (`src/core/ai/Shanten.ts`) — pure functions on tile-count vectors:
 - `Shanten.count(concealed, exposedSetCount)` — returns -1 (winning), 0 (tenpai), n (n away). Tries standard, 七對, and 十三么 in parallel and returns the minimum.
@@ -169,9 +169,25 @@ Configured in both `tsconfig.app.json` and `vite.config.ts`. Use these instead o
 - **AI faan awareness** — current AI maximises shanten only. It will sometimes win on cheap hands when a delay-and-build approach would score more.
 - **Robbing the kong** and **九蓮寶燈** — still inherited from Phase 3 deferrals.
 
-**Phase 6 — Training mode** is next.
-- Curated common-shape library (兩面 / 嵌張 / 邊張 / 單騎 / 對對聽).
-- Probability engine: given a hand + visible discards + opponents' melds, compute P(reaching tenpai or winning) for each candidate discard. Reuses `Shanten`.
-- Quiz flow: present hand → user picks discard → reveal optimal answer + reasoning. Track streaks in `localStorage`.
+**Phase 6 — Training mode: ✅ complete** (2026-05-15). 150 passing tests across 20 files.
+
+**Training stack lives in `src/training/`:**
+- `Ukeire` — wraps `Shanten` to enumerate every distinct discard from a 14-tile hand, computing resulting shanten + acceptance count (unseen tiles that would advance toward tenpai/win). Skips bonus tiles and dedupes by tile-type. `optimalDiscard()` picks min-shanten then max-acceptance.
+- `PuzzleGenerator` — random wall + filtered draw. Targets shanten ≤ 1 by default; gives up after N attempts and returns the best seen. Puzzles are deterministic per seeded RNG. Each puzzle carries a stable `id` derived from the hand contents.
+- `trainingStore` (in `src/store/`) — single live puzzle + guess state + reveal flag + persisted progress (`mahjong.training.progress.v1` in localStorage; gracefully degrades if storage is unavailable).
+- `TrainingPage` — tab-switched UI. Click any tile to submit a guess; reveal panel shows your pick vs optimal with full discard table sorted by shanten then acceptance.
+
+**App-level:** `App.tsx` now has a top-level tab switcher (`'game' | 'training'`) wrapping `Board` and `TrainingPage`. Local React state — no router needed yet.
+
+**Phase 6 deferrals** (optional polish):
+- **Curated puzzle library** with hand-picked shapes (兩面 / 嵌張 / 邊張 / 單騎 / 對對聽) demonstrating specific concepts. The reveal could name the shape category. Right now puzzles are purely random.
+- **Difficulty selector** for puzzles (force a specific shanten range, or 七對-focused training).
+- **Hint mode** (e.g., highlight wait tiles in the hand before guess).
+
+**Phase 7 — Multiplayer (P2P over WebRTC)** is next.
+- PeerJS room codes (peer ID = join code).
+- Host-authoritative game state; deterministic shuffle from a host-broadcast seed.
+- Network policy: `PlayerPolicy` impl that sends/receives `TurnAction`/`Claim` over the data channel.
+- Lobby + reconnect + graceful drop handling.
 
 See README.md for the full phase list.

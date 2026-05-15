@@ -161,11 +161,17 @@ Pushing to `main` triggers [.github/workflows/deploy.yml](.github/workflows/depl
 - Opponent hands and melds render as text fallbacks in the side bars rather than full tile images.
 - Robbing the kong (搶槓), 九蓮寶燈, and multi-winner discards remain deferred from Phase 3.
 
-**Phase 5 — AI opponents: ✅ complete.** Real opponents driven by a shanten engine.
+**Phase 5 — AI opponents: ✅ complete.**
 - [Shanten](src/core/ai/Shanten.ts) — recursive decomposer that scores a hand against the standard 4-set+pair target plus 七對 and 十三么 special hands. Exposes `count`, `bestDiscard`, and `waits`. Also feeds the Phase 6 trainer.
 - [RandomAI](src/core/ai/RandomAI.ts) — beginner tier; uniformly random discards, never claims.
 - [EfficiencyAI](src/core/ai/EfficiencyAI.ts) — intermediate tier; picks the shanten-minimising discard, declares 自摸 / concealed kong when legal, claims pong/kong when it preserves shanten.
 - **Difficulty selector** on the start screen (Beginner / Intermediate); `gameStore.setDifficulty` rebuilds the table with the chosen AI when the next round starts.
 - **`onTurnEnd` hook on `Round`** — UI store injects a ~350 ms pause between turns so AI actions render visibly instead of jumping all at once.
 
-**Next:** Phase 6 — Training mode (probability-optimal discard quiz built on the shanten engine).
+**Phase 6 — Training mode: ✅ complete.** The project's namesake learning tool.
+- [Ukeire](src/training/Ukeire.ts) — for each candidate discard from a 14-tile hand, computes the resulting shanten plus the "acceptance count": how many unseen tiles would advance the hand toward tenpai/win.
+- [PuzzleGenerator](src/training/PuzzleGenerator.ts) — shuffles random walls until it lands on an interesting (tenpai or 1-shanten) hand; falls back to the best of N attempts.
+- **Quiz UI** ([TrainingPage.tsx](src/ui/components/TrainingPage.tsx)) — click a tile to "discard". Reveal compares your pick to the optimal, lists every discard ranked by shanten then acceptance, and tracks streak/accuracy in `localStorage`.
+- Top-level tab switcher between **Play** and **Training** in [App.tsx](src/ui/App.tsx).
+
+**Next:** Phase 7 — WebRTC multiplayer (host-authoritative P2P via PeerJS).
