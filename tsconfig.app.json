@@ -23,14 +23,13 @@
 
     "types": ["vitest/globals", "@testing-library/jest-dom"],
 
-    "baseUrl": ".",
     "paths": {
-      "@core/*": ["src/core/*"],
-      "@ui/*": ["src/ui/*"],
-      "@store/*": ["src/store/*"],
-      "@multiplayer/*": ["src/multiplayer/*"],
-      "@training/*": ["src/training/*"],
-      "@utils/*": ["src/utils/*"]
+      "@core/*": ["./src/core/*"],
+      "@ui/*": ["./src/ui/*"],
+      "@store/*": ["./src/store/*"],
+      "@multiplayer/*": ["./src/multiplayer/*"],
+      "@training/*": ["./src/training/*"],
+      "@utils/*": ["./src/utils/*"]
     }
   },
   "include": ["src", "tests"]
