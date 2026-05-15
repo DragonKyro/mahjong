@@ -67,13 +67,13 @@ function pad(hand: readonly Tile[]): Tile[] {
 // ---------- Tests ----------
 
 describe('Round.deal', () => {
-  it('gives every player exactly 13 concealed tiles when no bonuses are dealt', () => {
+  it('gives every player exactly 13 concealed tiles when no bonuses are dealt', async () => {
     const winOnFirstAction = new ScriptedPolicy({ chooseAction: () => ({ kind: 'win' }) });
     const players = fourPlayers([winOnFirstAction, new ScriptedPolicy(), new ScriptedPolicy(), new ScriptedPolicy()]);
     const wall = buildRiggedWall({
       hands: [pad([]), pad([]), pad([]), pad([])],
     });
-    new Round(players, wall, Wind.East, Wind.East).play();
+    await new Round(players, wall, Wind.East, Wind.East).play();
     expect(players[1].hand.concealed.length).toBe(13);
     expect(players[2].hand.concealed.length).toBe(13);
     expect(players[3].hand.concealed.length).toBe(13);
@@ -81,7 +81,7 @@ describe('Round.deal', () => {
     expect(players[0].hand.concealed.length).toBe(14);
   });
 
-  it('replaces bonus tiles drawn during the deal with dead-wall tiles', () => {
+  it('replaces bonus tiles drawn during the deal with dead-wall tiles', async () => {
     // Slot East's first dealt tile with a bonus; verify the replacement goes
     // to bonus pile and a non-bonus fills the concealed slot.
     const eastHand = pad([new BonusTile('flower', 1)]);
@@ -96,14 +96,14 @@ describe('Round.deal', () => {
       new ScriptedPolicy(),
     ]);
     const round = new Round(players, wall, Wind.East, Wind.East);
-    round.play();
+    await round.play();
     expect(players[0].hand.bonuses.map((b) => b.toString())).toEqual(['F1']);
     expect(players[0].hand.concealed.some((t) => t.equals(new SuitTile(Suit.Character, 7)))).toBe(true);
   });
 });
 
 describe('Round turn loop — wins', () => {
-  it('ends in self-draw win when active player chooses win on their draw', () => {
+  it('ends in self-draw win when active player chooses win on their draw', async () => {
     const players = fourPlayers([
       new ScriptedPolicy({ chooseAction: () => ({ kind: 'win' }) }),
       new ScriptedPolicy(),
@@ -111,7 +111,7 @@ describe('Round turn loop — wins', () => {
       new ScriptedPolicy(),
     ]);
     const wall = new Wall(mulberry32(1));
-    const outcome = new Round(players, wall, Wind.East, Wind.East).play();
+    const outcome = await new Round(players, wall, Wind.East, Wind.East).play();
     expect(outcome.kind).toBe('win');
     if (outcome.kind === 'win') {
       expect(outcome.winner).toBe(Wind.East);
@@ -119,7 +119,7 @@ describe('Round turn loop — wins', () => {
     }
   });
 
-  it('ends in discard win when another player claims the discard', () => {
+  it('ends in discard win when another player claims the discard', async () => {
     // East discards 5m on their first turn (deterministic via rigged hand).
     // South claims win on that discard.
     const targetDiscard = new SuitTile(Suit.Character, 5);
@@ -137,7 +137,7 @@ describe('Round turn loop — wins', () => {
       new ScriptedPolicy(),
       new ScriptedPolicy(),
     ]);
-    const outcome = new Round(players, wall, Wind.East, Wind.East).play();
+    const outcome = await new Round(players, wall, Wind.East, Wind.East).play();
     expect(outcome.kind).toBe('win');
     if (outcome.kind === 'win') {
       expect(outcome.winner).toBe(Wind.South);
@@ -148,7 +148,7 @@ describe('Round turn loop — wins', () => {
 });
 
 describe('Round turn loop — claims', () => {
-  it('transfers the turn to the claimer on a pong, exposes the meld, and skips the draw', () => {
+  it('transfers the turn to the claimer on a pong, exposes the meld, and skips the draw', async () => {
     const target = new SuitTile(Suit.Bamboo, 7);
     // East holds the 5m it will discard; West holds 2x 7s ready to pong it.
     const eastHand = pad([target]);
@@ -175,7 +175,7 @@ describe('Round turn loop — claims', () => {
       new ScriptedPolicy({ chooseAction: () => ({ kind: 'win' }) }),
     ]);
     const round = new Round(players, wall, Wind.East, Wind.East);
-    round.play();
+    await round.play();
     // West should have an exposed pong of 7s.
     const pongMeld = players[2].hand.melds.find((m) => m.type === 'pong');
     expect(pongMeld?.tiles.every((t) => t.equals(target))).toBe(true);
@@ -184,7 +184,7 @@ describe('Round turn loop — claims', () => {
     expect(westDiscardedCount).toBeGreaterThan(0);
   });
 
-  it('offers chi only to the player immediately after the discarder', () => {
+  it('offers chi only to the player immediately after the discarder', async () => {
     const discard = new SuitTile(Suit.Bamboo, 5);
     // South (下家 of East) has 4s+6s → can chi.
     // West has 3s+4s → cannot chi (not 下家).
@@ -215,12 +215,12 @@ describe('Round turn loop — claims', () => {
       // End fast.
       new ScriptedPolicy({ chooseAction: () => ({ kind: 'win' }) }),
     ]);
-    new Round(players, wall, Wind.East, Wind.East).play();
+    await new Round(players, wall, Wind.East, Wind.East).play();
     expect(offeredToSouth).toContain('chi');
     expect(offeredToWest).not.toContain('chi');
   });
 
-  it('handles exposed kong from a discard: draws a replacement, then the claimer acts', () => {
+  it('handles exposed kong from a discard: draws a replacement, then the claimer acts', async () => {
     const target = new SuitTile(Suit.Character, 3);
     const replacement = new SuitTile(Suit.Circle, 4);
     const eastHand = pad([target]);
@@ -245,7 +245,7 @@ describe('Round turn loop — claims', () => {
       }),
       new ScriptedPolicy({ chooseAction: () => ({ kind: 'win' }) }),
     ]);
-    new Round(players, wall, Wind.East, Wind.East).play();
+    await new Round(players, wall, Wind.East, Wind.East).play();
 
     const kongMeld = players[2].hand.melds.find((m) => m.type === 'kong');
     expect(kongMeld).toBeDefined();
@@ -253,7 +253,7 @@ describe('Round turn loop — claims', () => {
     expect(captured.drawn?.equals(replacement)).toBe(true);
   });
 
-  it('handles concealed kong (self-kong) declared by the active player', () => {
+  it('handles concealed kong (self-kong) declared by the active player', async () => {
     const target = new SuitTile(Suit.Character, 3);
     const replacement = new SuitTile(Suit.Circle, 8);
     // East starts with all 4 of the target in their dealt 13 — possible because hand size is 13.
@@ -280,7 +280,7 @@ describe('Round turn loop — claims', () => {
       new ScriptedPolicy(),
       new ScriptedPolicy({ chooseAction: () => ({ kind: 'win' }) }),
     ]);
-    new Round(players, wall, Wind.East, Wind.East).play();
+    await new Round(players, wall, Wind.East, Wind.East).play();
 
     const kongMeld = players[0].hand.melds.find((m) => m.type === 'kong');
     expect(kongMeld).toBeDefined();
@@ -290,11 +290,11 @@ describe('Round turn loop — claims', () => {
 });
 
 describe('Round end conditions', () => {
-  it('returns a draw outcome when the live wall is exhausted with no claims/wins', () => {
+  it('returns a draw outcome when the live wall is exhausted with no claims/wins', async () => {
     // Default policies discard the just-drawn tile, never claim → no one wins.
     const players = fourPlayers();
     const wall = new Wall(mulberry32(123));
-    const outcome = new Round(players, wall, Wind.East, Wind.East).play();
+    const outcome = await new Round(players, wall, Wind.East, Wind.East).play();
     expect(outcome.kind).toBe('draw');
     // Live wall is fully drained.
     expect(wall.liveRemaining()).toBe(0);

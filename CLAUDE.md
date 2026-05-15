@@ -111,7 +111,7 @@ Configured in both `tsconfig.app.json` and `vite.config.ts`. Use these instead o
 - **Chi may only be claimed from 下家 of the discarder** (the player who plays next). This is enforced in `Round.possibleClaims`. Don't loosen it.
 - **Claim priority resolution** is in `Round.resolveClaims`: `Win > Pong/Kong > Chi`, with closer-to-discarder breaking ties via `turnDistance`.
 
-**Phase 3 — Win detection & scoring: ✅ complete** (2026-05-15). 118 passing tests across 16 files.
+**Phase 3 — Win detection & scoring: ✅ complete** (2026-05-15).
 
 - Scoring stack lives in `src/core/scoring/`. `HandPatterns` (decomposer), `FaanCalculator`, `ScoreTable`, `WinValidator` interface + `HKOldStyleWinValidator` and `PermissiveWinValidator`, plus `RulesConfig` with `DEFAULT_RULES` (minFaan=3, limitFaan=13, baseUnit=1).
 - `Round` constructor now accepts `{ winValidator?, faanCalculator? }`. With no validator, behavior matches Phase 2 (every `win` accepted) — `Round.test.ts` still works unchanged.
@@ -123,11 +123,33 @@ Configured in both `tsconfig.app.json` and `vite.config.ts`. Use these instead o
 - **`WinContext` is the canonical shape for situational scoring inputs.** When adding faan rules that depend on game-state context (e.g. 搶槓), add the field to `WinContext` first and populate it in `Round.finalize*Win`, then read it in `FaanCalculator.scoreSituational`.
 - **Known gaps deferred from Phase 3:** 搶槓 (robbing the kong) is not yet implemented — the engine plumbing has the hook point at `Round.applyOwnKong` but no inter-turn win interception is wired. 九蓮寶燈 (Nine Gates) is not recognized.
 
-**Phase 4 — Single-player UI** is next.
-- Board layout (own hand bottom, 3 opponents at top/left/right, discard pool centered).
-- Tile rendering — see README, the asset source is a Phase-4-open question with the user.
-- Zustand store as the engine↔React bridge; one `Game` instance per session.
-- Click-to-discard; modal prompts for pong/kong/chi/win claims with countdown.
-- Per-round score panel showing the FaanResult breakdown.
+**Phase 4 — Single-player UI: ✅ MVP complete** (2026-05-15). 118 passing tests across 16 files.
+
+**Engine-API breaking change introduced this phase:** `PlayerPolicy.chooseAction` / `chooseClaim` now return `T | Promise<T>`, and `Round.play()` / `Game.playRound()` are `async`. AI / scripted-policy code can keep returning sync values; UI policy returns a Promise. All tests `await` round/game calls.
+
+**Asset source: FluffyStuff CC0** — see [CREDITS.md](CREDITS.md). Tile naming convention used in [src/ui/tileAsset.ts](src/ui/tileAsset.ts):
+- `Man{1..9}` (萬), `Pin{1..9}` (筒), `Sou{1..9}` (索)
+- `Ton`/`Nan`/`Shaa`/`Pei` for 東南西北
+- `Chun`/`Hatsu`/`Haku` for 中發白
+- `Back` for face-down opponent tiles
+- Bonus tiles (花/季) have no FluffyStuff asset; `TileImage` falls back to the Unicode glyph
+
+**UI conventions worth carrying into Phase 5+:**
+- React imports from `@store/*` and `@ui/*` only — **never** from `@core/*` directly. The store owns the bridge.
+- `UIPolicy` resolves a stored `resolve` callback when the user clicks. Don't try to throw or cancel mid-decision — Phase 4 has no cancellation path.
+- The store bumps a `tick` counter on each engine event; components that need to re-render on engine changes must subscribe to `tick`.
+- The default AI is `ScriptedPolicy()` (passive, discards what it drew). Phase 5 swaps this for a real `EfficiencyAI` / `DefensiveAI`.
+
+**Phase 4 known gaps** (deferred):
+- AI turns are synchronous, so the human sees state jump between their own turns with no intermediate animation. Fix: add an `onTurnEnd` hook to `Round` and have the store inject a 200–300 ms pause.
+- Opponent panels render melds and discards as text, not tile images. Cosmetic.
+- No way to cancel or restart a round mid-play other than reloading the page.
+- 搶槓, 九蓮寶燈, multi-winner discards still deferred from Phase 3.
+
+**Phase 5 — AI opponents** is next.
+- `Shanten` calculator (count of tiles away from tenpai) — also feeds the Phase 6 trainer.
+- `EfficiencyAI` (maximises tile-acceptance count when discarding).
+- `DefensiveAI` (reads opponents' discard streams to avoid feeding).
+- Three difficulty tiers wired into `gameStore.startRound`.
 
 See README.md for the full phase list.

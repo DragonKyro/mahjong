@@ -3,22 +3,18 @@ import type { Wind } from '@core/tiles/HonorTile';
 import type { TurnAction, Claim, PlayerView } from '@core/game/types';
 
 /**
- * How a player makes decisions. The engine calls into a policy synchronously
- * whenever it needs a choice — for tests this is a scripted record, for AI it
- * will be a heuristic engine (Phase 5), and for human UI it will be a wrapper
- * around an async user-prompt (Phase 4) reified into the sync engine via the
- * Zustand store.
+ * How a player makes decisions. The engine awaits a policy whenever it needs a
+ * choice — synchronous policies (AIs, scripted tests) simply return the value,
+ * while the UI policy returns a Promise that resolves when the user clicks.
  *
- * Policies do not own any state — they read from the `PlayerView` they are
- * given. Two consecutive calls with the same view must return equivalent
- * decisions (referential transparency is helpful for replay/debugging).
+ * Policies are not stateful — they read from the `PlayerView` they are given.
  */
 export interface PlayerPolicy {
   /**
    * The active player just drew `drawn` (or `null` if they took the turn via
    * chi/pong claim). Return a `discard`, `self-kong`, `add-kong`, or `win`.
    */
-  chooseAction(view: PlayerView, drawn: Tile | null): TurnAction;
+  chooseAction(view: PlayerView, drawn: Tile | null): TurnAction | Promise<TurnAction>;
 
   /**
    * Another player discarded `discard`. The engine has filtered `options` to
@@ -30,5 +26,5 @@ export interface PlayerPolicy {
     discard: Tile,
     from: Wind,
     options: readonly Claim[],
-  ): Claim;
+  ): Claim | Promise<Claim>;
 }

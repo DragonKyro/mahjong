@@ -30,43 +30,43 @@ describe('Game dealer rotation', () => {
     expect(g.dealer).toBe(Wind.East);
   });
 
-  it('retains the dealer (連莊) when the dealer wins the round', () => {
+  it('retains the dealer (連莊) when the dealer wins the round', async () => {
     const g = new Game(seat([insta, passivePolicy, passivePolicy, passivePolicy]), permissive());
-    const outcome = g.playRound(mulberry32(1));
+    const outcome = await g.playRound(mulberry32(1));
     expect(outcome.kind).toBe('win');
     expect(g.dealer).toBe(Wind.East);
     expect(g.prevailingWind).toBe(Wind.East);
   });
 
-  it('rotates dealer East → South when a non-dealer wins', () => {
+  it('rotates dealer East → South when a non-dealer wins', async () => {
     const g = new Game(seat([passivePolicy, insta, passivePolicy, passivePolicy]), permissive());
-    const outcome = g.playRound(mulberry32(1));
+    const outcome = await g.playRound(mulberry32(1));
     expect(outcome.kind).toBe('win');
     expect(g.dealer).toBe(Wind.South);
     expect(g.prevailingWind).toBe(Wind.East);
   });
 
-  it('rotates dealer on a draw outcome (wall exhaust)', () => {
+  it('rotates dealer on a draw outcome (wall exhaust)', async () => {
     const g = new Game(seat([passivePolicy, passivePolicy, passivePolicy, passivePolicy]), permissive());
-    const outcome = g.playRound(mulberry32(7));
+    const outcome = await g.playRound(mulberry32(7));
     expect(outcome.kind).toBe('draw');
     expect(g.dealer).toBe(Wind.South);
   });
 
-  it('advances the prevailing wind when the dealer cycles back to East', () => {
+  it('advances the prevailing wind when the dealer cycles back to East', async () => {
     const g = new Game(seat([insta, passivePolicy, passivePolicy, passivePolicy]), {
       ...permissive(),
       dealer: Wind.North,
     });
-    g.playRound(mulberry32(1));
+    await g.playRound(mulberry32(1));
     expect(g.dealer).toBe(Wind.East);
     expect(g.prevailingWind).toBe(Wind.South);
   });
 
-  it('records each round outcome in history', () => {
+  it('records each round outcome in history', async () => {
     const g = new Game(seat([passivePolicy, insta, passivePolicy, passivePolicy]), permissive());
-    g.playRound(mulberry32(1));
-    g.playRound(mulberry32(2));
+    await g.playRound(mulberry32(1));
+    await g.playRound(mulberry32(2));
     expect(g.history.length).toBe(2);
   });
 });

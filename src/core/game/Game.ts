@@ -60,13 +60,13 @@ export class Game {
   }
 
   /** Play one round to completion. The caller supplies a (possibly seeded) RNG for the wall. */
-  playRound(rng: RNG): RoundOutcome {
+  async playRound(rng: RNG): Promise<RoundOutcome> {
     const wall = new Wall(rng);
     const round = new Round(this.players, wall, this._prevailingWind, this._dealer, {
       winValidator: this.winValidator,
       faanCalculator: this.faanCalculator,
     });
-    const outcome = round.play();
+    const outcome = await round.play();
     this.history.push(outcome);
     if (outcome.kind === 'win' && outcome.faan) {
       this.applyScoring(outcome);

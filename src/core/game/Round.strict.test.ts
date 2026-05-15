@@ -55,7 +55,7 @@ const E = () => new HonorTile(Wind.East);
 const Red = () => new HonorTile(Dragon.Red);
 
 describe('Round + strict HKOldStyleWinValidator', () => {
-  it('accepts a self-draw win that exceeds the 3-faan minimum (對對和 + dragon pong + self-draw)', () => {
+  it('accepts a self-draw win that exceeds the 3-faan minimum (對對和 + dragon pong + self-draw)', async () => {
     // East dealt: 2m×3, 5p×3, 7s×3, 中×2, 東×2 (13 tiles).
     // First draw: 中. Hand becomes 2m×3 5p×3 7s×3 中×3 + 東×2 → 4 pongs + 1 pair = 對對和.
     // Faan: 對對和 (3) + dragon pong (1) + 自摸 (1) = 5, ≥ 3 minimum.
@@ -80,7 +80,7 @@ describe('Round + strict HKOldStyleWinValidator', () => {
       winValidator: new HKOldStyleWinValidator(DEFAULT_RULES),
       faanCalculator: new FaanCalculator(DEFAULT_RULES),
     });
-    const outcome = round.play();
+    const outcome = await round.play();
     expect(outcome.kind).toBe('win');
     if (outcome.kind === 'win') {
       expect(outcome.faan).toBeDefined();
@@ -91,7 +91,7 @@ describe('Round + strict HKOldStyleWinValidator', () => {
     }
   });
 
-  it('rejects a self-draw win that scores below the 3-faan minimum (雞胡 hand)', () => {
+  it('rejects a self-draw win that scores below the 3-faan minimum (雞胡 hand)', async () => {
     // 2 chi + 2 simple pongs + simple pair = 0 shape faan; with self-draw (1) +
     // 門前清 (1) = 2 faan total, below the 3-faan minimum.
     const eastHand: Tile[] = [
@@ -115,10 +115,10 @@ describe('Round + strict HKOldStyleWinValidator', () => {
       winValidator: new HKOldStyleWinValidator(DEFAULT_RULES),
       faanCalculator: new FaanCalculator(DEFAULT_RULES),
     });
-    expect(() => round.play()).toThrow(/validator rejected/);
+    await expect(round.play()).rejects.toThrow(/validator rejected/);
   });
 
-  it('does not offer the win claim option to a seat whose hand cannot win on the discard', () => {
+  it('does not offer the win claim option to a seat whose hand cannot win on the discard', async () => {
     // East discards 5m. South holds 13 fillers that don't pair-up or chi with 5m,
     // so the validator should suppress `win` from South's options for this discard.
     const offeredOnM5: string[] = [];
@@ -145,7 +145,7 @@ describe('Round + strict HKOldStyleWinValidator', () => {
       faanCalculator: new FaanCalculator(DEFAULT_RULES),
     });
     try {
-      round.play();
+      await round.play();
     } catch {
       // Round may throw later on a downstream invalid claim — we only care
       // about what was offered to South on the specific m(5) discard.

@@ -14,7 +14,7 @@ A browser-based Hong Kong-style (廣東) mahjong game. Hosted on GitHub Pages. T
 | Multiplayer transport | **WebRTC P2P** via PeerJS + free public signaling | GitHub Pages is static-only; P2P needs no backend and no accounts. |
 | Tech stack | **TypeScript (strict) + Vite + React + Zustand + Tailwind** | Vite gives fast iteration and trivial GH Pages deploys. React for UI, Zustand as a thin bridge — the **game engine itself is pure OOP TypeScript with zero React dependency**. |
 | Testing | **Vitest** + React Testing Library | Native Vite integration, fast. |
-| Tile graphics | **SVG** in `public/tiles/` | Sharp at any size, easy to swap art. |
+| Tile graphics | **SVG** in `public/tiles/` (vendored from [FluffyStuff/riichi-mahjong-tiles](https://github.com/FluffyStuff/riichi-mahjong-tiles), CC0) | Sharp at any size, easy to swap art. See [CREDITS.md](CREDITS.md). |
 
 ## Architecture — OOP at the core
 
@@ -141,11 +141,24 @@ Pushing to `main` triggers [.github/workflows/deploy.yml](.github/workflows/depl
 
 **Phase 2 — Game flow engine: ✅ complete.** Turn loop, claim resolution, kong & bonus replacement, dealer rotation. Trusted policies on `win`.
 
-**Phase 3 — Win detection & HK Old Style scoring: ✅ complete.** 118 passing tests across 16 files.
+**Phase 3 — Win detection & HK Old Style scoring: ✅ complete.**
 - [HandPatterns](src/core/scoring/HandPatterns.ts) — multiset-based decomposer enumerates every winning split into 4 sets + 1 pair, plus 七對 (Seven Pairs) and 十三么 (Thirteen Orphans). Exposes `canWin()` and `findWinningDecompositions()`.
 - [FaanCalculator](src/core/scoring/FaanCalculator.ts) — scores the highest-faan decomposition. Implements 平和, 對對和, 混一色, 清一色, 字一色, 大/小三元, 大/小四喜, 七對, 十三么, dragon/wind pong faan, 門前清, 自摸, 嶺上開花, 河底/海底, plus matching-seat bonus tiles.
 - [WinValidator](src/core/scoring/WinValidator.ts) interface, [HKOldStyleWinValidator](src/core/scoring/HKOldStyleWinValidator.ts) (3-faan minimum via [RulesConfig](src/core/scoring/RulesConfig.ts)), and [PermissiveWinValidator](src/core/scoring/PermissiveWinValidator.ts) for tests.
 - [ScoreTable](src/core/scoring/ScoreTable.ts) — base unit doubles per faan from `minFaan`, caps at `limitFaan`. 自摸 = each loser pays; 放炮 = discarder pays alone.
 - `Round` ([src/core/game/Round.ts](src/core/game/Round.ts)) now filters the `win` claim option through the validator and attaches a `FaanResult` to winning outcomes. `Game` ([src/core/game/Game.ts](src/core/game/Game.ts)) applies score deltas after each round.
 
-**Next:** Phase 4 — Single-player UI (board layout, tile rendering, click-to-discard, claim modals, scoreboard).
+**Phase 4 — Single-player UI: ✅ MVP complete.** First playable build.
+- **Async engine refactor:** `Round.play()` and `Game.playRound()` are now `async`, and `PlayerPolicy.chooseAction`/`chooseClaim` accept `T | Promise<T>` returns. AI/test policies stay synchronous; the new UI policy returns a Promise that resolves when the user clicks.
+- **Tile artwork** vendored from [FluffyStuff/riichi-mahjong-tiles](https://github.com/FluffyStuff/riichi-mahjong-tiles) (CC0). 36 SVGs in [public/tiles/](public/tiles/); flowers/seasons use a unicode-glyph fallback for now. See [CREDITS.md](CREDITS.md).
+- **State bridge:** [src/store/UIPolicy.ts](src/store/UIPolicy.ts) plus [src/store/gameStore.ts](src/store/gameStore.ts) (Zustand). The store owns one `Game`, parks the engine on each pending decision, and exposes `resolveAction` / `resolveClaim` for the UI.
+- **Board layout:** human at bottom (East), opponents around the sides, center area shows prevailing wind / dealer / wall / last discard. See [src/ui/components/Board.tsx](src/ui/components/Board.tsx).
+- **Interactions:** click-to-discard, claim panel (pass/pong/kong/chi/win) appears when the engine requests a claim, action panel offers concealed-kong + self-draw-win buttons when legal. Round outcome banner shows winner / loser / full faan breakdown.
+
+**Known Phase 4 limitations** (slated for follow-up):
+- Three opponents use a passive `ScriptedPolicy` that discards whatever they draw and never claims — actual AI lands in Phase 5.
+- Between human turns the AI runs synchronously, so the human sees state jump from "before my turn" → "after my turn" without intermediate AI actions visible. A simple per-turn delay hook will fix this.
+- Opponent hands and melds render as text fallbacks in the side bars rather than full tile images.
+- Robbing the kong (搶槓), 九蓮寶燈, and multi-winner discards remain deferred from Phase 3.
+
+**Next:** Phase 5 — AI opponents (shanten calculator + efficiency + defensive heuristics).

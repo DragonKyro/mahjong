@@ -59,11 +59,11 @@ export class Round {
   }
 
   /** Run the round to completion and return how it ended. */
-  play(): RoundOutcome {
+  async play(): Promise<RoundOutcome> {
     this.deal();
 
     while (true) {
-      const outcome = this.runTurn();
+      const outcome = await this.runTurn();
       if (outcome !== null) return outcome;
     }
   }
@@ -80,7 +80,7 @@ export class Round {
   }
 
   /** Returns null to continue the loop, or a `RoundOutcome` to end the round. */
-  private runTurn(): RoundOutcome | null {
+  private async runTurn(): Promise<RoundOutcome | null> {
     const active = this.players[this.activeIdx]!;
 
     // 1. Draw (or skip if entering this turn from a chi/pong claim).
@@ -98,14 +98,14 @@ export class Round {
     }
 
     // 2. Active player decides: discard, declare a kong (chained), or win.
-    let action = active.policy.chooseAction(this.viewFor(this.activeIdx), drawn);
+    let action = await active.policy.chooseAction(this.viewFor(this.activeIdx), drawn);
     while (action.kind === 'self-kong' || action.kind === 'add-kong') {
       this.applyOwnKong(active, action);
       if (this.wall.deadRemaining() === 0) return { kind: 'draw' };
       drawn = this.drawThroughBonuses(active, 'replacement');
       active.hand.add(drawn);
       this.drewFromKongReplacement = true;
-      action = active.policy.chooseAction(this.viewFor(this.activeIdx), drawn);
+      action = await active.policy.chooseAction(this.viewFor(this.activeIdx), drawn);
     }
 
     if (action.kind === 'win') {
@@ -121,9 +121,8 @@ export class Round {
     this.lastDiscard = { tile: discarded, fromIdx: this.activeIdx };
 
     // 4. Poll the other three players for claims.
-    const bid = this.resolveClaims(discarded, this.activeIdx);
+    const bid = await this.resolveClaims(discarded, this.activeIdx);
     if (bid === null) {
-      // No claim — rotate.
       this.activeIdx = (this.activeIdx + 1) % 4;
       this.nextDraw = 'live';
       return null;
@@ -296,10 +295,10 @@ export class Round {
   }
 
   /** Poll all non-discarders for claim choices and resolve by priority. */
-  private resolveClaims(
+  private async resolveClaims(
     discard: Tile,
     fromIdx: number,
-  ): { playerIdx: number; claim: Claim } | null {
+  ): Promise<{ playerIdx: number; claim: Claim } | null> {
     type Bid = { playerIdx: number; claim: Claim };
     const winBids: Bid[] = [];
     const setBids: Bid[] = []; // pong + kong
@@ -309,7 +308,7 @@ export class Round {
       if (i === fromIdx) continue;
       const options = this.possibleClaims(this.players[i]!, discard, fromIdx, i);
       if (options.length === 1) continue; // only `pass` available
-      const chosen = this.players[i]!.policy.chooseClaim(
+      const chosen = await this.players[i]!.policy.chooseClaim(
         this.viewFor(i),
         discard,
         this.players[fromIdx]!.seatWind,
