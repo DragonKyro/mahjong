@@ -96,25 +96,26 @@ Configured in both `tsconfig.app.json` and `vite.config.ts`. Use these instead o
 
 **Phase 0 — Bootstrap: ✅ complete** (2026-05-15).
 
-**Phase 1 — Core domain model: ✅ complete** (2026-05-15). Pure-OOP engine in `src/core/`, 59 passing tests. Shipped:
-- `Tile` abstract + `SuitTile`/`HonorTile`/`BonusTile` with `equals`, `compareTo`, `toString`, `toUnicode`, and a canonical `sortKey` (0–41 across the whole set).
-- `Wall` with seedable `mulberry32` RNG, live wall + 14-tile dead wall, `draw` / `drawReplacement` / `liveRemaining` / `deadRemaining`.
-- `Meld` (abstract) + `Chi`, `Pong`, `Kong` (with `KongKind` for 暗/明/加), `Pair` — all validated at construction.
-- `Hand` (sorted concealed tiles + exposed melds + bonus pile, `size()` accounting for kongs).
-- `Player` (abstract) + `HumanPlayer`.
+**Phase 1 — Core domain model: ✅ complete** (2026-05-15). Pure-OOP engine in `src/core/`. Shipped: `Tile`/`SuitTile`/`HonorTile`/`BonusTile`, `Wall` with seedable RNG, `Meld`+`Chi`/`Pong`/`Kong`/`Pair`, `Hand`, `Player` (abstract) + `HumanPlayer`.
 
-**Phase 1 conventions worth carrying into Phase 2:**
-- Co-located unit tests (`Foo.ts` alongside `Foo.test.ts`) — every class gets one.
-- Constructor-time validation throws `Error` with a tile-list in the message — keep this format for future engine classes.
-- Class fields default to `readonly` unless they're explicitly mutable game state (`score`, the internal arrays in `Hand`).
-- With `noUncheckedIndexedAccess`, indexed lookups need `!` when we know the bounds (e.g. `arr[i]!` after a `findIndex` guard) — this is acceptable in engine code.
+**Phase 2 — Game flow engine: ✅ complete** (2026-05-15). 78 passing tests across 11 files.
+- `PlayerPolicy` interface (`chooseAction(view, drawn)`, `chooseClaim(view, discard, from, options)`) is the **only** way the engine asks a seat for a decision. Tests use `ScriptedPolicy`; Phase 4 UI and Phase 5 AI will provide their own implementations.
+- `Player` now requires a policy in its constructor — `new HumanPlayer(name, seatWind, policy)`. The Phase 1 `new HumanPlayer(name, seatWind)` calls are dead.
+- `Round` orchestrates one deal end-to-end; `Game` controls multi-round dealer rotation.
+- Engine value types (`TurnAction`, `Claim`, `PlayerView`, `RoundOutcome`) live in `src/core/game/types.ts`. They are **kept serializable from day one** because Phase 7 will send the same shapes over WebRTC.
+- `Wall.fromOrder(tiles)` is a test-only static factory for rigging specific scenarios — never call this from production code.
 
-**Phase 2 — Game flow engine** is next. Build the turn loop:
-- `Game` (top-level orchestrator: 4 players, 1 wall, prevailing wind, dealer rotation).
-- `Round` / `Hand` of play (deal → turn cycle → end conditions).
-- `TurnManager` resolving draw → discard → claim priority (Win > Pong/Kong > Chi from 上家 only).
-- Concealed kong, exposed kong, added kong, replacement draws after kong/bonus.
-- Wind rotation (東→南→西→北) and dealer-retention rules.
-- Integration tests with deterministic wall seeds.
+**Phase 2 engine conventions worth carrying into Phase 3:**
+- **`win` is currently un-validated.** The engine offers `{ kind: 'win' }` as a claim option on every non-bonus discard and accepts `{ kind: 'win' }` self-draw actions from any policy — there's no `WinValidator` yet. Phase 3 adds hand-pattern recognition that filters these options correctly.
+- **No `Math.random()` anywhere in `src/core/`** — every shuffle and probabilistic decision goes through an injected `RNG`. Multiplayer (Phase 7) will exploit this for deterministic replay; the trainer (Phase 6) will too.
+- **Chi may only be claimed from 下家 of the discarder** (the player who plays next). This is enforced in `Round.possibleClaims`. Don't loosen it.
+- **Claim priority resolution** is in `Round.resolveClaims`: `Win > Pong/Kong > Chi`, with closer-to-discarder breaking ties via `turnDistance`.
+
+**Phase 3 — Win detection & scoring (HK Old Style)** is next.
+- `HandPatterns` recognizer: standard 4-set-1-pair decomposition, plus special hands (十三么, 七對, 九蓮寶燈).
+- `FaanCalculator`: 平和, 對對和, 混一色, 清一色, 小/大三元, 小/大四喜, 字一色, plus situational faan (自摸 / 海底撈月 / 搶槓 / 嶺上開花 / 門前清). 3-faan minimum to win; read from a configurable rules object — don't hardcode `3`.
+- `ScoreTable`: 放炮 vs 自摸 payouts.
+- Wire `WinValidator` into `Round.possibleClaims` so `win` is only offered when the hand actually completes.
+- Hook robbing-the-kong (搶槓) into the add-kong replacement draw path.
 
 See README.md for the full phase list.

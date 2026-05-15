@@ -29,10 +29,26 @@ export class Wall {
   private liveHead = 0;
   private deadOffset = 0;
 
-  constructor(rng: RNG) {
-    const arr = Wall.buildFullSet();
-    shuffleInPlace(arr, rng);
-    this.tiles = arr;
+  constructor(input: RNG | { tiles: readonly Tile[] }) {
+    if (typeof input === 'function') {
+      const arr = Wall.buildFullSet();
+      shuffleInPlace(arr, input);
+      this.tiles = arr;
+    } else {
+      if (input.tiles.length !== TOTAL_TILES) {
+        throw new Error(`Wall needs ${TOTAL_TILES} tiles, got ${input.tiles.length}`);
+      }
+      this.tiles = input.tiles.slice();
+    }
+  }
+
+  /**
+   * Test-only factory for rigged scenarios: build a wall in a caller-provided tile
+   * order, skipping the shuffle. Live draws come from index 0 upward; the last
+   * DEAD_WALL_SIZE tiles serve as the dead wall (drawn from the end downward).
+   */
+  static fromOrder(tiles: readonly Tile[]): Wall {
+    return new Wall({ tiles });
   }
 
   /** Builds an unshuffled tileset. Exposed for tests; do not use in gameplay. */

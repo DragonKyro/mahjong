@@ -57,6 +57,16 @@ export class Hand {
     this.exposedMelds.push(meld);
   }
 
+  /**
+   * Replace an existing exposed meld in place (used when a pong is promoted to a kong via 加槓).
+   * Throws if `oldMeld` is not present.
+   */
+  replaceMeld(oldMeld: Meld, newMeld: Meld): void {
+    const idx = this.exposedMelds.indexOf(oldMeld);
+    if (idx === -1) throw new Error('Meld not found in exposed melds');
+    this.exposedMelds.splice(idx, 1, newMeld);
+  }
+
   get concealed(): readonly Tile[] {
     return this.concealedTiles;
   }

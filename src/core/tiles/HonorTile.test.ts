@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { HonorTile, Wind, Dragon } from './HonorTile';
+import { HonorTile, Wind, Dragon, nextWind, prevWind, SEAT_ORDER } from './HonorTile';
 import { SuitTile, Suit } from './SuitTile';
 
 describe('HonorTile', () => {
@@ -50,5 +50,32 @@ describe('HonorTile', () => {
   it('counts as terminal-or-honor for chi-formation rules', () => {
     expect(new HonorTile(Wind.East).isTerminalOrHonor()).toBe(true);
     expect(new HonorTile(Dragon.Red).isTerminalOrHonor()).toBe(true);
+  });
+});
+
+describe('Wind helpers', () => {
+  it('SEAT_ORDER cycles East -> South -> West -> North', () => {
+    expect(SEAT_ORDER).toEqual([Wind.East, Wind.South, Wind.West, Wind.North]);
+  });
+
+  it('nextWind rotates forward', () => {
+    expect(nextWind(Wind.East)).toBe(Wind.South);
+    expect(nextWind(Wind.South)).toBe(Wind.West);
+    expect(nextWind(Wind.West)).toBe(Wind.North);
+    expect(nextWind(Wind.North)).toBe(Wind.East);
+  });
+
+  it('prevWind rotates backward', () => {
+    expect(prevWind(Wind.East)).toBe(Wind.North);
+    expect(prevWind(Wind.South)).toBe(Wind.East);
+    expect(prevWind(Wind.West)).toBe(Wind.South);
+    expect(prevWind(Wind.North)).toBe(Wind.West);
+  });
+
+  it('next then prev is identity', () => {
+    for (const w of SEAT_ORDER) {
+      expect(prevWind(nextWind(w))).toBe(w);
+      expect(nextWind(prevWind(w))).toBe(w);
+    }
   });
 });

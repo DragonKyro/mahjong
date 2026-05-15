@@ -138,6 +138,14 @@ Pushing to `main` triggers [.github/workflows/deploy.yml](.github/workflows/depl
 - `Meld` abstract + `Chi`, `Pong`, `Kong` (concealed/exposed/added), `Pair` with full validation.
 - `Hand` (sorted concealed pool + exposed melds + bonus pile) and `Player` abstract + `HumanPlayer` skeleton.
 - Seedable `mulberry32` RNG in [src/utils/rng.ts](src/utils/rng.ts) — the engine never calls `Math.random()`.
-- 59 unit tests covering every class.
 
-**Next:** Phase 2 — Game flow engine. Build the `Game`/`Round`/`TurnManager` that orchestrates deal → draw → discard → claim resolution.
+**Phase 2 — Game flow engine: ✅ complete.** The turn loop runs end-to-end through injected policies:
+- `PlayerPolicy` interface (`chooseAction`, `chooseClaim`) + `ScriptedPolicy` test helper. Policy is now a required constructor argument on `Player`.
+- `Round` ([src/core/game/Round.ts](src/core/game/Round.ts)) — single deal: deal 13 → turn loop → claim resolution → end.
+- `Game` ([src/core/game/Game.ts](src/core/game/Game.ts)) — multi-round controller with dealer rotation (連莊 on dealer-win, otherwise East→South→West→North) and prevailing-wind advancement.
+- Claim priority **Win > Pong/Kong > Chi**, with Chi restricted to 下家 of the discarder.
+- Concealed kong, added kong, and exposed-kong-from-discard all trigger replacement draws from the dead wall. Bonus tiles drawn at any point auto-route to the bonus pile and trigger replacements.
+- Wall exhaust → 流局 (draw).
+- Phase 2 trusts policies on `win` (no validation yet); Phase 3 will plug in `WinValidator`.
+
+**Next:** Phase 3 — Win detection and HK Old Style faan scoring.

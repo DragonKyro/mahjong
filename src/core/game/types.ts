@@ -1,0 +1,60 @@
+import type { Tile } from '@core/tiles/Tile';
+import type { SuitTile } from '@core/tiles/SuitTile';
+import type { BonusTile } from '@core/tiles/BonusTile';
+import type { Wind } from '@core/tiles/HonorTile';
+import type { Meld } from '@core/melds/Meld';
+
+/**
+ * Decisions a player can make on their own turn after drawing (or after a chi/pong
+ * claim, in which case `drawn` is null and they must discard).
+ */
+export type TurnAction =
+  | { kind: 'discard'; tile: Tile }
+  | { kind: 'self-kong'; tile: Tile } // concealed kong declared from 4 in hand (暗槓)
+  | { kind: 'add-kong'; tile: Tile } // promote an existing exposed pong to a kong (加槓)
+  | { kind: 'win' }; // self-drawn win (自摸)
+
+/**
+ * Decisions a player can make on someone else's discard. `pass` is always an option;
+ * the engine offers other variants only when they are physically possible from the
+ * player's hand (so policies can rely on `options` containing only legal claims).
+ */
+export type Claim =
+  | { kind: 'pass' }
+  | { kind: 'chi'; helpers: readonly [SuitTile, SuitTile] }
+  | { kind: 'pong' }
+  | { kind: 'kong' } // exposed kong from a discard (明槓)
+  | { kind: 'win' }; // ron / discard win (食糊)
+
+/**
+ * What a player sees when asked to make a decision. The active player's own hand is
+ * visible only via `self.hand`; opponents' concealed tiles are summarized as counts.
+ * This is the same shape we will eventually send across the WebRTC channel in
+ * multiplayer — keeping it serializable from the start.
+ */
+export interface PlayerView {
+  self: {
+    seatWind: Wind;
+    hand: readonly Tile[];
+    melds: readonly Meld[];
+    bonuses: readonly BonusTile[];
+    discards: readonly Tile[];
+  };
+  others: ReadonlyArray<{
+    seatWind: Wind;
+    melds: readonly Meld[];
+    bonuses: readonly BonusTile[];
+    discards: readonly Tile[];
+    handSize: number;
+  }>;
+  prevailingWind: Wind;
+  dealer: Wind;
+  wallRemaining: number;
+  /** The most recent discard, if a turn has happened. */
+  lastDiscard: { tile: Tile; from: Wind } | null;
+}
+
+/** Why a round ended. `from === null` means 自摸 (self-draw). */
+export type RoundOutcome =
+  | { kind: 'win'; winner: Wind; from: Wind | null; winningTile: Tile }
+  | { kind: 'draw' }; // 流局

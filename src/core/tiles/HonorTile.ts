@@ -39,6 +39,21 @@ const HONOR_UNICODE: Record<Honor, string> = {
 
 const WIND_SET: ReadonlySet<Honor> = new Set([Wind.East, Wind.South, Wind.West, Wind.North]);
 
+/** Seat order around the table (East -> South -> West -> North -> East). */
+export const SEAT_ORDER: readonly Wind[] = [Wind.East, Wind.South, Wind.West, Wind.North];
+
+/** The 下家 of `w` — the player who plays immediately after `w`. */
+export function nextWind(w: Wind): Wind {
+  const i = SEAT_ORDER.indexOf(w);
+  return SEAT_ORDER[(i + 1) % 4]!;
+}
+
+/** The 上家 of `w` — the player who plays immediately before `w`. */
+export function prevWind(w: Wind): Wind {
+  const i = SEAT_ORDER.indexOf(w);
+  return SEAT_ORDER[(i + 3) % 4]!;
+}
+
 export class HonorTile extends Tile {
   readonly kind = 'honor' as const;
 

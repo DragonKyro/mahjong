@@ -1,12 +1,13 @@
 import { Hand } from '@core/game/Hand';
 import type { Tile } from '@core/tiles/Tile';
 import type { Wind } from '@core/tiles/HonorTile';
+import type { PlayerPolicy } from './PlayerPolicy';
 
 /**
- * A seat at the table. Owns its hand, its discard pile, and its running score.
- * Concrete subclasses (HumanPlayer, AIPlayer) differ only in how decisions are
- * made — those abstract methods will be added in Phase 2 when the turn loop
- * needs them.
+ * A seat at the table. Owns its hand, its discard pile, its running score, and
+ * the `PlayerPolicy` that decides this seat's moves. Concrete subclasses are
+ * thin — the variation between human, AI, and remote players lives in the
+ * injected policy, not in the class hierarchy.
  */
 export abstract class Player {
   readonly hand = new Hand();
@@ -16,6 +17,7 @@ export abstract class Player {
   constructor(
     readonly name: string,
     readonly seatWind: Wind,
+    readonly policy: PlayerPolicy,
   ) {}
 
   /** Append a tile to this player's discard pool. */
