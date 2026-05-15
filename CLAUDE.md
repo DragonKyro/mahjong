@@ -173,7 +173,7 @@ Configured in both `tsconfig.app.json` and `vite.config.ts`. Use these instead o
 - **AI faan awareness** — current AI maximises shanten only. It will sometimes win on cheap hands when a delay-and-build approach would score more.
 - **Robbing the kong** and **九蓮寶燈** — inherited from Phase 3 deferrals.
 
-**Phase 6 — Training mode: ✅ complete** (2026-05-15). 150 passing tests across 20 files.
+**Phase 6 — Training mode: ✅ complete** (2026-05-15).
 
 **Training stack lives in `src/training/`:**
 - `Ukeire` — wraps `Shanten` to enumerate every distinct discard from a 14-tile hand, computing resulting shanten + acceptance count (unseen tiles that would advance toward tenpai/win). Skips bonus tiles and dedupes by tile-type. `optimalDiscard()` picks min-shanten then max-acceptance.
@@ -188,10 +188,34 @@ Configured in both `tsconfig.app.json` and `vite.config.ts`. Use these instead o
 - **Difficulty selector** for puzzles (force a specific shanten range, or 七對-focused training).
 - **Hint mode** (e.g., highlight wait tiles in the hand before guess).
 
-**Phase 7 — Multiplayer (P2P over WebRTC)** is next.
-- PeerJS room codes (peer ID = join code).
-- Host-authoritative game state; deterministic shuffle from a host-broadcast seed.
-- Network policy: `PlayerPolicy` impl that sends/receives `TurnAction`/`Claim` over the data channel.
-- Lobby + reconnect + graceful drop handling.
+**Phase 7 — Multiplayer (P2P over WebRTC): ✅ MVP complete** (2026-05-15). 166 passing tests across 23 files.
+
+**Architecture: lockstep, host-relay.** Every peer runs an identical `Game` seeded from the host-broadcast seed. Each peer's own seat uses `UIPolicy`; the other three use `RemotePolicy`. Decisions made locally are resolved into the local engine AND broadcast over the network; remote peers receive the decision and resolve their corresponding `RemotePolicy`. Clients connect to the host only; the host relays decision messages to other clients (4-peer topology with 3 connections, not full mesh).
+
+**`src/multiplayer/`:**
+- `Protocol.ts` — wire-format types (`WireTurnAction`, `WireClaim`, `RoomMessage`) plus tile/action/claim (de)serializers. **Pure**, no DOM, no PeerJS — keep it that way.
+- `Connection.ts` — `new Peer()` lifecycle, `peer.on('connection')` for host or `peer.connect(hostId)` for client. Low-level only; no game knowledge.
+- `RemotePolicy.ts` — implements `PlayerPolicy` via stored resolve callbacks. `abort(reason)` rejects pending awaits on disconnect.
+
+**`src/store/multiplayerStore.ts`** owns the connection + lobby + per-round Game. Patterns:
+- Module-scoped runtime singletons (`connection`, `remotePolicies`, `uiPolicy`, `activeGame`) live outside Zustand state because PeerJS objects aren't snapshot-friendly.
+- Host-mode message handler relays game-decision messages (`action-decision` / `claim-decision`) to all other clients before applying locally.
+- `resolveAction` / `resolveClaim` both resolve the local UIPolicy AND broadcast — keep these two effects in lockstep, or peers will desync.
+- Seat assignment: host = E, joiners get S/W/N in order.
+
+**Shared rendering:** `GameTable` (in `src/ui/components/`) is now the stateless board renderer. `Board` (single-player) and `MultiplayerPage` both wrap it.
+
+**Phase 7 MVP gaps** (deferred):
+- **Single round only**; no continuous play. Add a "Next round" button + multi-round state in the host.
+- **No reconnect**; if any peer drops, RemotePolicies abort and the round dies. Add a reconnect handshake using the same peer ID.
+- **No version handshake**; peers on different code versions will desync silently. Add a `hello` payload that includes a version stamp and reject mismatched joins.
+- **No graceful host-leaves**; `host-left` message exists but UI handling is minimal.
+- **PeerJS public broker**; reliable but rate-limited. For higher load, run a private broker.
+
+**Phase 8 — Polish & deploy** is next.
+- Tile-move animations, optional sound.
+- Keyboard navigation + screen-reader labels.
+- Final QA pass.
+- Verify the GitHub Pages workflow deploys cleanly.
 
 See README.md for the full phase list.

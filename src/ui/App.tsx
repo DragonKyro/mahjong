@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { Board } from './components/Board';
 import { TrainingPage } from './components/TrainingPage';
+import { MultiplayerPage } from './components/MultiplayerPage';
 
-type Mode = 'game' | 'training';
+type Mode = 'game' | 'training' | 'multiplayer';
 
 export function App() {
   const [mode, setMode] = useState<Mode>('game');
@@ -15,8 +16,13 @@ export function App() {
         <TabButton active={mode === 'training'} onClick={() => setMode('training')}>
           訓練 · Training
         </TabButton>
+        <TabButton active={mode === 'multiplayer'} onClick={() => setMode('multiplayer')}>
+          連線 · Multiplayer
+        </TabButton>
       </nav>
-      {mode === 'game' ? <Board /> : <TrainingPage />}
+      {mode === 'game' && <Board />}
+      {mode === 'training' && <TrainingPage />}
+      {mode === 'multiplayer' && <MultiplayerPage />}
     </div>
   );
 }

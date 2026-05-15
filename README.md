@@ -169,10 +169,23 @@ Pushing to `main` triggers [.github/workflows/deploy.yml](.github/workflows/depl
 - **Difficulty selector** on the start screen (Beginner / Intermediate); `gameStore.setDifficulty` rebuilds the table with the chosen AI when the next round starts.
 - **`onTurnEnd` hook on `Round`** — UI store injects a ~350 ms pause between turns so AI actions render visibly instead of jumping all at once.
 
-**Phase 6 — Training mode: ✅ complete.** The project's namesake learning tool.
+**Phase 6 — Training mode: ✅ complete.**
 - [Ukeire](src/training/Ukeire.ts) — for each candidate discard from a 14-tile hand, computes the resulting shanten plus the "acceptance count": how many unseen tiles would advance the hand toward tenpai/win.
 - [PuzzleGenerator](src/training/PuzzleGenerator.ts) — shuffles random walls until it lands on an interesting (tenpai or 1-shanten) hand; falls back to the best of N attempts.
 - **Quiz UI** ([TrainingPage.tsx](src/ui/components/TrainingPage.tsx)) — click a tile to "discard". Reveal compares your pick to the optimal, lists every discard ranked by shanten then acceptance, and tracks streak/accuracy in `localStorage`.
 - Top-level tab switcher between **Play** and **Training** in [App.tsx](src/ui/App.tsx).
 
-**Next:** Phase 7 — WebRTC multiplayer (host-authoritative P2P via PeerJS).
+**Phase 7 — WebRTC multiplayer: ✅ MVP complete.** Four humans can play together over WebRTC.
+- [Protocol](src/multiplayer/Protocol.ts) — serializable `RoomMessage` types and Tile/Action/Claim wire (de)serializers. Pure module, no DOM.
+- [Connection](src/multiplayer/Connection.ts) — thin PeerJS wrapper. Host mode auto-generates a peer ID (room code); client mode dials the host.
+- [RemotePolicy](src/multiplayer/RemotePolicy.ts) — `PlayerPolicy` that awaits a network response, with `abort()` for clean teardown.
+- [multiplayerStore](src/store/multiplayerStore.ts) — owns the connection, lobby roster, and per-round Game. Lockstep architecture: every peer runs an identical engine seeded from the host-broadcast seed; local decisions resolve the local UIPolicy AND broadcast to the other peers, who apply via their RemotePolicies.
+- **Host-relay topology**: clients connect only to the host; the host relays decision messages to other clients. Seats are auto-assigned in join order (host = East).
+- [MultiplayerPage](src/ui/components/MultiplayerPage.tsx) — connect screen → lobby (shows room code + roster) → playing → finished.
+- Tab switcher in [App.tsx](src/ui/App.tsx) now offers Play / Training / Multiplayer.
+- Shared [GameTable](src/ui/components/GameTable.tsx) renders the board for both single-player and multiplayer.
+
+**Phase 7 MVP limitations:**
+- Plays one round only — no continuous multi-round play.
+- No reconnect; if any peer drops, the round breaks.
+- Bundle is ~290 KB JS (PeerJS adds ~100 KB) — fine for desktop, heavier on slow connections.
