@@ -94,13 +94,27 @@ Configured in both `tsconfig.app.json` and `vite.config.ts`. Use these instead o
 
 ## Current phase
 
-**Phase 0 — Bootstrap: ✅ complete** (2026-05-15). Vite + React 18 + TS strict, Tailwind, Vitest + jsdom + Testing Library, ESLint flat config, Prettier, and the GH Pages workflow are in place. Smoke test passes; production build succeeds.
+**Phase 0 — Bootstrap: ✅ complete** (2026-05-15).
 
-**Phase 1 — Core domain model** is next. Build the OOP engine in `src/core/`:
-- `Tile` abstract + `SuitTile`/`HonorTile`/`BonusTile` subclasses (equality, ordering, stringification).
-- `Wall` with a seedable RNG (no `Math.random()` inside `src/core/`).
-- `Meld` abstract + `Chi`/`Pong`/`Kong`/`Pair`.
-- `Hand`, `Player` (abstract) + `HumanPlayer` skeleton.
-- Vitest unit tests for every class.
+**Phase 1 — Core domain model: ✅ complete** (2026-05-15). Pure-OOP engine in `src/core/`, 59 passing tests. Shipped:
+- `Tile` abstract + `SuitTile`/`HonorTile`/`BonusTile` with `equals`, `compareTo`, `toString`, `toUnicode`, and a canonical `sortKey` (0–41 across the whole set).
+- `Wall` with seedable `mulberry32` RNG, live wall + 14-tile dead wall, `draw` / `drawReplacement` / `liveRemaining` / `deadRemaining`.
+- `Meld` (abstract) + `Chi`, `Pong`, `Kong` (with `KongKind` for 暗/明/加), `Pair` — all validated at construction.
+- `Hand` (sorted concealed tiles + exposed melds + bonus pile, `size()` accounting for kongs).
+- `Player` (abstract) + `HumanPlayer`.
+
+**Phase 1 conventions worth carrying into Phase 2:**
+- Co-located unit tests (`Foo.ts` alongside `Foo.test.ts`) — every class gets one.
+- Constructor-time validation throws `Error` with a tile-list in the message — keep this format for future engine classes.
+- Class fields default to `readonly` unless they're explicitly mutable game state (`score`, the internal arrays in `Hand`).
+- With `noUncheckedIndexedAccess`, indexed lookups need `!` when we know the bounds (e.g. `arr[i]!` after a `findIndex` guard) — this is acceptable in engine code.
+
+**Phase 2 — Game flow engine** is next. Build the turn loop:
+- `Game` (top-level orchestrator: 4 players, 1 wall, prevailing wind, dealer rotation).
+- `Round` / `Hand` of play (deal → turn cycle → end conditions).
+- `TurnManager` resolving draw → discard → claim priority (Win > Pong/Kong > Chi from 上家 only).
+- Concealed kong, exposed kong, added kong, replacement draws after kong/bonus.
+- Wind rotation (東→南→西→北) and dealer-retention rules.
+- Integration tests with deterministic wall seeds.
 
 See README.md for the full phase list.

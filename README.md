@@ -130,6 +130,14 @@ Pushing to `main` triggers [.github/workflows/deploy.yml](.github/workflows/depl
 
 ## Status
 
-**Phase 0 — Bootstrap: ✅ complete.** Vite + React + TS scaffold, Tailwind, Vitest, ESLint flat config, Prettier, and the GH Pages workflow are in. Smoke test passes, production build succeeds.
+**Phase 0 — Bootstrap: ✅ complete.** Vite + React + TS scaffold, Tailwind, Vitest, ESLint flat config, Prettier, and the GH Pages workflow.
 
-**Next:** Phase 1 — Core domain model. Implement `Tile`, `Wall`, `Meld`, `Player` classes in `src/core/` with full unit-test coverage.
+**Phase 1 — Core domain model: ✅ complete.** Pure-OOP engine in [src/core/](src/core/):
+- `Tile` abstract + `SuitTile` (萬筒索), `HonorTile` (東南西北 + 中發白), `BonusTile` (花/季) with equality, canonical sort order, unicode glyphs.
+- `Wall` (144 tiles, seedable shuffle, live wall + 14-tile dead wall for kong/bonus replacements).
+- `Meld` abstract + `Chi`, `Pong`, `Kong` (concealed/exposed/added), `Pair` with full validation.
+- `Hand` (sorted concealed pool + exposed melds + bonus pile) and `Player` abstract + `HumanPlayer` skeleton.
+- Seedable `mulberry32` RNG in [src/utils/rng.ts](src/utils/rng.ts) — the engine never calls `Math.random()`.
+- 59 unit tests covering every class.
+
+**Next:** Phase 2 — Game flow engine. Build the `Game`/`Round`/`TurnManager` that orchestrates deal → draw → discard → claim resolution.
