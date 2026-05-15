@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { useTrainingStore } from '@store/trainingStore';
 import { TileImage } from './TileImage';
 import type { Tile } from '@core/tiles/Tile';
-import type { DiscardAnalysis } from '@training/Ukeire';
+import type { DiscardAnalysis } from '@core/ai/Ukeire';
 
 export function TrainingPage() {
   const puzzle = useTrainingStore((s) => s.puzzle);

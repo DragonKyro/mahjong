@@ -125,5 +125,5 @@ function removeOne(tiles: readonly Tile[], target: Tile): Tile[] {
   return out;
 }
 
-// Re-export for convenience so trainer code can `import { tileToIndex } from '@training/Ukeire'`.
+// Re-export for trainer / AI convenience.
 export { tileToIndex };

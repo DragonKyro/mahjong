@@ -154,20 +154,24 @@ Configured in both `tsconfig.app.json` and `vite.config.ts`. Use these instead o
 - `Shanten.waits(concealed13, exposed)` — enumerates the tiles that would complete a tenpai hand. Returns [] if not tenpai.
 - Internal `tileToIndex` / `indexToTile` map tiles to a 34-slot vector (suits 0-26, honors 27-33). Reuse them in Phase 6.
 
-**AI policies:**
-- `RandomAI` — uniformly random discard from non-bonus concealed tiles; always passes claims. Optional seeded RNG for tests.
-- `EfficiencyAI` — `Shanten.bestDiscard` for discards; declares 自摸 when `Shanten.count(hand, exposed) === -1`; declares 暗槓 on any four-of-a-kind in hand; claims pong/kong when the resulting shanten ≤ current shanten. No chi-claiming yet (rarely shanten-positive without contextual scoring).
+**AI policies (`src/core/ai/`):**
+- `RandomAI` — beginner. Uniformly random discard from non-bonus concealed tiles; always passes claims. Optional seeded RNG for tests.
+- `EfficiencyAI` — intermediate. `Shanten.bestDiscard` for discards; declares 自摸 when `Shanten.count(hand, exposed) === -1`; declares 暗槓 on any four-of-a-kind in hand; claims pong/kong when the resulting shanten ≤ current shanten. No chi-claiming yet.
+- `DefensiveAI` — advanced. Identical win / kong / claim rules as `EfficiencyAI`, but the discard search filters to minimum-shanten candidates first, then breaks ties by danger score: 0 if the tile is genbutsu (already in any opponent's discard pile), +1 if it's suji-safe (rank ± 3 of an opponent's same-suit discard), +3 otherwise — summed across all three opponents.
+
+**Ukeire** (`src/core/ai/Ukeire.ts`) is the shared per-discard analyser used by `DefensiveAI` and the training mode. It enumerates each distinct discard from a 14-tile hand, returns `{ shanten, acceptance, waits[] }` for each, and exposes `optimalDiscard()` (min shanten → max acceptance → highest sort-key).
 
 **Engine changes worth knowing about:**
 - **`onTurnEnd` hook** added to `Round` and forwarded by `Game`. Called after each turn (post-discard, post-claim resolution). The gameStore uses it to bump `tick` and `await setTimeout(350)` so AI actions render between turns. Tests that don't supply the hook are unaffected.
 - `gameStore.difficulty` (`'beginner' | 'intermediate'`) drives which AI policy fills the three AI seats. Changing difficulty drops the in-progress game; the next `startRound` rebuilds.
 - The default difficulty is `'intermediate'` (EfficiencyAI).
 
-**Phase 5 deferrals** (still open):
-- **DefensiveAI** (opponent-discard-aware) — left for a follow-up. Pure efficiency feeds the dangerous waits.
-- **Chi evaluation** — EfficiencyAI ignores chi. Add when DefensiveAI lands or when faan-aware scoring kicks in.
+**Phase 5 follow-ups landed:** `DefensiveAI` (opponent-discard-aware, advanced tier) shipped post-Phase-6. `Ukeire` moved from `src/training/` to `src/core/ai/` so engine code doesn't reach into training.
+
+**Still open:**
+- **Chi evaluation** — none of the AIs claim chi. Add when faan-aware scoring kicks in.
 - **AI faan awareness** — current AI maximises shanten only. It will sometimes win on cheap hands when a delay-and-build approach would score more.
-- **Robbing the kong** and **九蓮寶燈** — still inherited from Phase 3 deferrals.
+- **Robbing the kong** and **九蓮寶燈** — inherited from Phase 3 deferrals.
 
 **Phase 6 — Training mode: ✅ complete** (2026-05-15). 150 passing tests across 20 files.
 

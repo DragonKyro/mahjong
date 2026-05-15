@@ -165,6 +165,7 @@ Pushing to `main` triggers [.github/workflows/deploy.yml](.github/workflows/depl
 - [Shanten](src/core/ai/Shanten.ts) — recursive decomposer that scores a hand against the standard 4-set+pair target plus 七對 and 十三么 special hands. Exposes `count`, `bestDiscard`, and `waits`. Also feeds the Phase 6 trainer.
 - [RandomAI](src/core/ai/RandomAI.ts) — beginner tier; uniformly random discards, never claims.
 - [EfficiencyAI](src/core/ai/EfficiencyAI.ts) — intermediate tier; picks the shanten-minimising discard, declares 自摸 / concealed kong when legal, claims pong/kong when it preserves shanten.
+- [DefensiveAI](src/core/ai/DefensiveAI.ts) — advanced tier; among the shanten-equal candidate discards, prefers genbutsu (already in an opponent's discards) then suji-safe tiles.
 - **Difficulty selector** on the start screen (Beginner / Intermediate); `gameStore.setDifficulty` rebuilds the table with the chosen AI when the next round starts.
 - **`onTurnEnd` hook on `Round`** — UI store injects a ~350 ms pause between turns so AI actions render visibly instead of jumping all at once.
 

@@ -2,7 +2,7 @@ import { Tile } from '@core/tiles/Tile';
 import { Wall } from '@core/tiles/Wall';
 import type { RNG } from '@utils/rng';
 import { mulberry32 } from '@utils/rng';
-import { Ukeire, type DiscardAnalysis } from './Ukeire';
+import { Ukeire, type DiscardAnalysis } from '@core/ai/Ukeire';
 
 export interface Puzzle {
   /** Stable id for progress tracking — derived from the hand contents. */

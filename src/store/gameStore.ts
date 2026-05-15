@@ -5,6 +5,7 @@ import { Wind } from '@core/tiles/HonorTile';
 import { mulberry32 } from '@utils/rng';
 import { RandomAI } from '@core/ai/RandomAI';
 import { EfficiencyAI } from '@core/ai/EfficiencyAI';
+import { DefensiveAI } from '@core/ai/DefensiveAI';
 import type { PlayerPolicy } from '@core/players/PlayerPolicy';
 import type { RoundOutcome, TurnAction, Claim } from '@core/game/types';
 import type { SeatedPlayers } from '@core/game/Round';
@@ -14,11 +15,12 @@ type PendingDecision =
   | ({ kind: 'action' } & ActionRequest)
   | ({ kind: 'claim' } & ClaimRequest);
 
-export type Difficulty = 'beginner' | 'intermediate';
+export type Difficulty = 'beginner' | 'intermediate' | 'advanced';
 
 const DIFFICULTY_LABEL: Record<Difficulty, string> = {
   beginner: 'Beginner (random discards)',
   intermediate: 'Intermediate (shanten-optimal)',
+  advanced: 'Advanced (efficient + defensive)',
 };
 
 /** Pause between turns so the UI can render AI actions before the next AI moves. */
@@ -43,11 +45,12 @@ interface GameStore {
 }
 
 export const DIFFICULTIES: ReadonlyArray<{ value: Difficulty; label: string }> = (
-  ['beginner', 'intermediate'] as const
+  ['beginner', 'intermediate', 'advanced'] as const
 ).map((d) => ({ value: d, label: DIFFICULTY_LABEL[d] }));
 
 function aiPolicyFor(difficulty: Difficulty): PlayerPolicy {
   if (difficulty === 'beginner') return new RandomAI();
+  if (difficulty === 'advanced') return new DefensiveAI();
   return new EfficiencyAI();
 }
 
