@@ -1,35 +1,52 @@
 import { Wall } from '@core/tiles/Wall';
-import { Wind, nextWind } from '@core/tiles/HonorTile';
+import { Wind, nextWind, SEAT_ORDER } from '@core/tiles/HonorTile';
 import { Round, type SeatedPlayers } from './Round';
 import type { RoundOutcome } from './types';
 import type { RNG } from '@utils/rng';
+import type { WinValidator } from '@core/scoring/WinValidator';
+import { HKOldStyleWinValidator } from '@core/scoring/HKOldStyleWinValidator';
+import { FaanCalculator } from '@core/scoring/FaanCalculator';
+import { ScoreTable } from '@core/scoring/ScoreTable';
+import { DEFAULT_RULES, type RulesConfig } from '@core/scoring/RulesConfig';
 
 /**
  * Multi-round match controller. Owns the prevailing wind, the dealer rotation,
- * and the running scoreboard. A `Game` does not own a wall — each round
- * receives a fresh `Wall(rng)` so the host's RNG can be re-seeded between
- * rounds in multiplayer if needed.
+ * the running scoreboard, and the scoring stack (validator + faan calculator +
+ * score table). A `Game` does not own a wall — each round receives a fresh
+ * `Wall(rng)` so the host's RNG can be re-seeded between rounds in multiplayer.
  *
- * Phase 2 dealer rule (simplification of HK Old Style):
- *   - Dealer (莊) retains (連莊) if they win the round, either by self-draw or
- *     by claiming someone else's discard.
- *   - Otherwise the dealer position rotates East -> South -> West -> North.
+ * Dealer rule (simplification of HK Old Style):
+ *   - Dealer retains (連莊) if they win.
+ *   - Otherwise the dealer rotates East -> South -> West -> North.
  *   - The prevailing wind advances when the dealer cycles back to East.
  */
 export class Game {
   readonly players: SeatedPlayers;
+  readonly rules: RulesConfig;
+  readonly winValidator: WinValidator;
+  readonly faanCalculator: FaanCalculator;
+  readonly scoreTable: ScoreTable;
   private _prevailingWind: Wind;
   private _dealer: Wind;
   readonly history: RoundOutcome[] = [];
 
   constructor(
     players: SeatedPlayers,
-    opts?: { prevailingWind?: Wind; dealer?: Wind },
+    opts?: {
+      prevailingWind?: Wind;
+      dealer?: Wind;
+      rules?: RulesConfig;
+      winValidator?: WinValidator;
+    },
   ) {
     if (players[0].seatWind !== Wind.East) {
       throw new Error('Game expects players in [East, South, West, North] order');
     }
     this.players = players;
+    this.rules = opts?.rules ?? DEFAULT_RULES;
+    this.faanCalculator = new FaanCalculator(this.rules);
+    this.scoreTable = new ScoreTable(this.rules);
+    this.winValidator = opts?.winValidator ?? new HKOldStyleWinValidator(this.rules);
     this._prevailingWind = opts?.prevailingWind ?? Wind.East;
     this._dealer = opts?.dealer ?? Wind.East;
   }
@@ -45,11 +62,31 @@ export class Game {
   /** Play one round to completion. The caller supplies a (possibly seeded) RNG for the wall. */
   playRound(rng: RNG): RoundOutcome {
     const wall = new Wall(rng);
-    const round = new Round(this.players, wall, this._prevailingWind, this._dealer);
+    const round = new Round(this.players, wall, this._prevailingWind, this._dealer, {
+      winValidator: this.winValidator,
+      faanCalculator: this.faanCalculator,
+    });
     const outcome = round.play();
     this.history.push(outcome);
+    if (outcome.kind === 'win' && outcome.faan) {
+      this.applyScoring(outcome);
+    }
     this.advanceDealer(outcome);
     return outcome;
+  }
+
+  private applyScoring(outcome: Extract<RoundOutcome, { kind: 'win' }>): void {
+    if (!outcome.faan) return;
+    const deltas = this.scoreTable.scoreWin({
+      faan: outcome.faan.total,
+      winnerSeat: outcome.winner,
+      fromSeat: outcome.from,
+    });
+    for (const w of SEAT_ORDER) {
+      const idx = SEAT_ORDER.indexOf(w);
+      const player = this.players[idx];
+      if (player) player.score += deltas.get(w) ?? 0;
+    }
   }
 
   private advanceDealer(outcome: RoundOutcome): void {

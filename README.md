@@ -139,13 +139,13 @@ Pushing to `main` triggers [.github/workflows/deploy.yml](.github/workflows/depl
 - `Hand` (sorted concealed pool + exposed melds + bonus pile) and `Player` abstract + `HumanPlayer` skeleton.
 - Seedable `mulberry32` RNG in [src/utils/rng.ts](src/utils/rng.ts) — the engine never calls `Math.random()`.
 
-**Phase 2 — Game flow engine: ✅ complete.** The turn loop runs end-to-end through injected policies:
-- `PlayerPolicy` interface (`chooseAction`, `chooseClaim`) + `ScriptedPolicy` test helper. Policy is now a required constructor argument on `Player`.
-- `Round` ([src/core/game/Round.ts](src/core/game/Round.ts)) — single deal: deal 13 → turn loop → claim resolution → end.
-- `Game` ([src/core/game/Game.ts](src/core/game/Game.ts)) — multi-round controller with dealer rotation (連莊 on dealer-win, otherwise East→South→West→North) and prevailing-wind advancement.
-- Claim priority **Win > Pong/Kong > Chi**, with Chi restricted to 下家 of the discarder.
-- Concealed kong, added kong, and exposed-kong-from-discard all trigger replacement draws from the dead wall. Bonus tiles drawn at any point auto-route to the bonus pile and trigger replacements.
-- Wall exhaust → 流局 (draw).
-- Phase 2 trusts policies on `win` (no validation yet); Phase 3 will plug in `WinValidator`.
+**Phase 2 — Game flow engine: ✅ complete.** Turn loop, claim resolution, kong & bonus replacement, dealer rotation. Trusted policies on `win`.
 
-**Next:** Phase 3 — Win detection and HK Old Style faan scoring.
+**Phase 3 — Win detection & HK Old Style scoring: ✅ complete.** 118 passing tests across 16 files.
+- [HandPatterns](src/core/scoring/HandPatterns.ts) — multiset-based decomposer enumerates every winning split into 4 sets + 1 pair, plus 七對 (Seven Pairs) and 十三么 (Thirteen Orphans). Exposes `canWin()` and `findWinningDecompositions()`.
+- [FaanCalculator](src/core/scoring/FaanCalculator.ts) — scores the highest-faan decomposition. Implements 平和, 對對和, 混一色, 清一色, 字一色, 大/小三元, 大/小四喜, 七對, 十三么, dragon/wind pong faan, 門前清, 自摸, 嶺上開花, 河底/海底, plus matching-seat bonus tiles.
+- [WinValidator](src/core/scoring/WinValidator.ts) interface, [HKOldStyleWinValidator](src/core/scoring/HKOldStyleWinValidator.ts) (3-faan minimum via [RulesConfig](src/core/scoring/RulesConfig.ts)), and [PermissiveWinValidator](src/core/scoring/PermissiveWinValidator.ts) for tests.
+- [ScoreTable](src/core/scoring/ScoreTable.ts) — base unit doubles per faan from `minFaan`, caps at `limitFaan`. 自摸 = each loser pays; 放炮 = discarder pays alone.
+- `Round` ([src/core/game/Round.ts](src/core/game/Round.ts)) now filters the `win` claim option through the validator and attaches a `FaanResult` to winning outcomes. `Game` ([src/core/game/Game.ts](src/core/game/Game.ts)) applies score deltas after each round.
+
+**Next:** Phase 4 — Single-player UI (board layout, tile rendering, click-to-discard, claim modals, scoreboard).

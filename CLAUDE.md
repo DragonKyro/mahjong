@@ -98,7 +98,7 @@ Configured in both `tsconfig.app.json` and `vite.config.ts`. Use these instead o
 
 **Phase 1 — Core domain model: ✅ complete** (2026-05-15). Pure-OOP engine in `src/core/`. Shipped: `Tile`/`SuitTile`/`HonorTile`/`BonusTile`, `Wall` with seedable RNG, `Meld`+`Chi`/`Pong`/`Kong`/`Pair`, `Hand`, `Player` (abstract) + `HumanPlayer`.
 
-**Phase 2 — Game flow engine: ✅ complete** (2026-05-15). 78 passing tests across 11 files.
+**Phase 2 — Game flow engine: ✅ complete** (2026-05-15).
 - `PlayerPolicy` interface (`chooseAction(view, drawn)`, `chooseClaim(view, discard, from, options)`) is the **only** way the engine asks a seat for a decision. Tests use `ScriptedPolicy`; Phase 4 UI and Phase 5 AI will provide their own implementations.
 - `Player` now requires a policy in its constructor — `new HumanPlayer(name, seatWind, policy)`. The Phase 1 `new HumanPlayer(name, seatWind)` calls are dead.
 - `Round` orchestrates one deal end-to-end; `Game` controls multi-round dealer rotation.
@@ -111,11 +111,23 @@ Configured in both `tsconfig.app.json` and `vite.config.ts`. Use these instead o
 - **Chi may only be claimed from 下家 of the discarder** (the player who plays next). This is enforced in `Round.possibleClaims`. Don't loosen it.
 - **Claim priority resolution** is in `Round.resolveClaims`: `Win > Pong/Kong > Chi`, with closer-to-discarder breaking ties via `turnDistance`.
 
-**Phase 3 — Win detection & scoring (HK Old Style)** is next.
-- `HandPatterns` recognizer: standard 4-set-1-pair decomposition, plus special hands (十三么, 七對, 九蓮寶燈).
-- `FaanCalculator`: 平和, 對對和, 混一色, 清一色, 小/大三元, 小/大四喜, 字一色, plus situational faan (自摸 / 海底撈月 / 搶槓 / 嶺上開花 / 門前清). 3-faan minimum to win; read from a configurable rules object — don't hardcode `3`.
-- `ScoreTable`: 放炮 vs 自摸 payouts.
-- Wire `WinValidator` into `Round.possibleClaims` so `win` is only offered when the hand actually completes.
-- Hook robbing-the-kong (搶槓) into the add-kong replacement draw path.
+**Phase 3 — Win detection & scoring: ✅ complete** (2026-05-15). 118 passing tests across 16 files.
+
+- Scoring stack lives in `src/core/scoring/`. `HandPatterns` (decomposer), `FaanCalculator`, `ScoreTable`, `WinValidator` interface + `HKOldStyleWinValidator` and `PermissiveWinValidator`, plus `RulesConfig` with `DEFAULT_RULES` (minFaan=3, limitFaan=13, baseUnit=1).
+- `Round` constructor now accepts `{ winValidator?, faanCalculator? }`. With no validator, behavior matches Phase 2 (every `win` accepted) — `Round.test.ts` still works unchanged.
+- `Game` defaults to `HKOldStyleWinValidator(DEFAULT_RULES)` and applies `ScoreTable` deltas to `player.score` after each winning round. **Phase 2-style Game tests that scripted artificial wins now pass `winValidator: new PermissiveWinValidator()`** — that pattern is preserved in `Game.test.ts` and worth following for any future "skip the rules" test.
+
+**Phase 3 conventions worth carrying into Phase 4:**
+- **`FaanResult` is attached to `RoundOutcome` only when a `faanCalculator` is configured.** Treat `outcome.faan` as optional.
+- **HandPatterns picks one of multiple decompositions**; `FaanCalculator.calculate` re-scores all of them and returns the highest. Don't assume only one valid decomposition exists for a hand.
+- **`WinContext` is the canonical shape for situational scoring inputs.** When adding faan rules that depend on game-state context (e.g. 搶槓), add the field to `WinContext` first and populate it in `Round.finalize*Win`, then read it in `FaanCalculator.scoreSituational`.
+- **Known gaps deferred from Phase 3:** 搶槓 (robbing the kong) is not yet implemented — the engine plumbing has the hook point at `Round.applyOwnKong` but no inter-turn win interception is wired. 九蓮寶燈 (Nine Gates) is not recognized.
+
+**Phase 4 — Single-player UI** is next.
+- Board layout (own hand bottom, 3 opponents at top/left/right, discard pool centered).
+- Tile rendering — see README, the asset source is a Phase-4-open question with the user.
+- Zustand store as the engine↔React bridge; one `Game` instance per session.
+- Click-to-discard; modal prompts for pong/kong/chi/win claims with countdown.
+- Per-round score panel showing the FaanResult breakdown.
 
 See README.md for the full phase list.

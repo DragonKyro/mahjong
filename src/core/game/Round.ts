@@ -6,7 +6,9 @@ import { Player } from '@core/players/Player';
 import { Chi } from '@core/melds/Chi';
 import { Pong } from '@core/melds/Pong';
 import { Kong } from '@core/melds/Kong';
-import type { TurnAction, Claim, PlayerView, RoundOutcome } from './types';
+import type { WinValidator } from '@core/scoring/WinValidator';
+import type { FaanCalculator } from '@core/scoring/FaanCalculator';
+import type { TurnAction, Claim, PlayerView, RoundOutcome, WinContext } from './types';
 
 export type SeatedPlayers = readonly [Player, Player, Player, Player];
 
@@ -28,12 +30,22 @@ export class Round {
   readonly players: SeatedPlayers;
   readonly prevailingWind: Wind;
   readonly dealer: Wind;
+  readonly winValidator: WinValidator | undefined;
+  readonly faanCalculator: FaanCalculator | undefined;
 
   private activeIdx: number;
   private lastDiscard: { tile: Tile; fromIdx: number } | null = null;
   private nextDraw: 'live' | 'replacement' | 'none' = 'live';
+  /** True while the player just drew from the dead wall (after kong/bonus replacement). */
+  private drewFromKongReplacement = false;
 
-  constructor(players: SeatedPlayers, wall: Wall, prevailingWind: Wind, dealer: Wind) {
+  constructor(
+    players: SeatedPlayers,
+    wall: Wall,
+    prevailingWind: Wind,
+    dealer: Wind,
+    opts?: { winValidator?: WinValidator; faanCalculator?: FaanCalculator },
+  ) {
     if (players[0].seatWind !== Wind.East) {
       throw new Error('Round expects players in [East, South, West, North] order');
     }
@@ -41,6 +53,8 @@ export class Round {
     this.wall = wall;
     this.prevailingWind = prevailingWind;
     this.dealer = dealer;
+    this.winValidator = opts?.winValidator;
+    this.faanCalculator = opts?.faanCalculator;
     this.activeIdx = SEAT_ORDER.indexOf(dealer);
   }
 
@@ -71,6 +85,7 @@ export class Round {
 
     // 1. Draw (or skip if entering this turn from a chi/pong claim).
     let drawn: Tile | null = null;
+    this.drewFromKongReplacement = false;
     if (this.nextDraw === 'live') {
       if (this.wall.isLiveExhausted()) return { kind: 'draw' };
       drawn = this.drawThroughBonuses(active, 'live');
@@ -79,6 +94,7 @@ export class Round {
       if (this.wall.deadRemaining() === 0) return { kind: 'draw' };
       drawn = this.drawThroughBonuses(active, 'replacement');
       active.hand.add(drawn);
+      this.drewFromKongReplacement = true;
     }
 
     // 2. Active player decides: discard, declare a kong (chained), or win.
@@ -88,6 +104,7 @@ export class Round {
       if (this.wall.deadRemaining() === 0) return { kind: 'draw' };
       drawn = this.drawThroughBonuses(active, 'replacement');
       active.hand.add(drawn);
+      this.drewFromKongReplacement = true;
       action = active.policy.chooseAction(this.viewFor(this.activeIdx), drawn);
     }
 
@@ -95,7 +112,7 @@ export class Round {
       if (drawn === null) {
         throw new Error('Self-draw win requires a freshly drawn tile');
       }
-      return { kind: 'win', winner: active.seatWind, from: null, winningTile: drawn };
+      return this.finalizeSelfDrawWin(active, drawn);
     }
 
     // 3. Discard.
@@ -113,18 +130,83 @@ export class Round {
     }
 
     if (bid.claim.kind === 'win') {
-      return {
-        kind: 'win',
-        winner: this.players[bid.playerIdx]!.seatWind,
-        from: active.seatWind,
-        winningTile: discarded,
-      };
+      return this.finalizeDiscardWin(bid.playerIdx, this.activeIdx, discarded);
     }
 
     this.applyDiscardClaim(discarded, bid.playerIdx, bid.claim);
     this.activeIdx = bid.playerIdx;
     this.nextDraw = bid.claim.kind === 'kong' ? 'replacement' : 'none';
     return null;
+  }
+
+  private finalizeSelfDrawWin(active: Player, winningTile: Tile): RoundOutcome {
+    const concealedSansWin = removeOneOccurrence(active.hand.concealed, winningTile);
+    const context: WinContext = {
+      winnerSeat: active.seatWind,
+      prevailingWind: this.prevailingWind,
+      fromSeat: null,
+      fromKongReplacement: this.drewFromKongReplacement,
+      fromKongRob: false,
+      fromLastTile: this.wall.isLiveExhausted() && !this.drewFromKongReplacement,
+      bonusTiles: active.hand.bonuses.map((b) => ({ category: b.category, index: b.index })),
+    };
+    if (this.winValidator) {
+      const ok = this.winValidator.canWin({
+        concealed: concealedSansWin,
+        winningTile,
+        exposedMelds: active.hand.melds,
+        context,
+      });
+      if (!ok) {
+        throw new Error(
+          `Player ${active.name} declared self-draw win but the configured validator rejected it`,
+        );
+      }
+    }
+    const faan = this.faanCalculator?.calculate(
+      concealedSansWin,
+      winningTile,
+      active.hand.melds,
+      context,
+    );
+    return {
+      kind: 'win',
+      winner: active.seatWind,
+      from: null,
+      winningTile,
+      ...(faan ? { faan } : {}),
+    };
+  }
+
+  private finalizeDiscardWin(
+    claimerIdx: number,
+    discarderIdx: number,
+    winningTile: Tile,
+  ): RoundOutcome {
+    const claimer = this.players[claimerIdx]!;
+    const discarder = this.players[discarderIdx]!;
+    const context: WinContext = {
+      winnerSeat: claimer.seatWind,
+      prevailingWind: this.prevailingWind,
+      fromSeat: discarder.seatWind,
+      fromKongReplacement: false,
+      fromKongRob: false,
+      fromLastTile: this.wall.isLiveExhausted(),
+      bonusTiles: claimer.hand.bonuses.map((b) => ({ category: b.category, index: b.index })),
+    };
+    const faan = this.faanCalculator?.calculate(
+      claimer.hand.concealed,
+      winningTile,
+      claimer.hand.melds,
+      context,
+    );
+    return {
+      kind: 'win',
+      winner: claimer.seatWind,
+      from: discarder.seatWind,
+      winningTile,
+      ...(faan ? { faan } : {}),
+    };
   }
 
   /** Pull tiles until a non-bonus appears; bonus tiles are routed to the player's bonus pile. */
@@ -262,15 +344,16 @@ export class Round {
   /**
    * Enumerate every claim the given player could make on `discard`.
    *
-   * Win is always offered for non-bonus discards in Phase 2 — the engine cannot
-   * validate winning hands until Phase 3 plugs in a `WinValidator`. Policies are
-   * trusted to only return `win` when their hand actually wins.
+   * `win` is offered only when (a) no validator is configured (Phase 2 trust mode)
+   * or (b) the configured validator approves the hypothetical winning hand.
    */
   private possibleClaims(player: Player, discard: Tile, fromIdx: number, byIdx: number): Claim[] {
     const out: Claim[] = [{ kind: 'pass' }];
     if (discard.isBonus()) return out;
 
-    out.push({ kind: 'win' });
+    if (this.canClaimWin(player, discard, fromIdx)) {
+      out.push({ kind: 'win' });
+    }
 
     const matches = player.hand.countOf(discard);
     if (matches >= 2) out.push({ kind: 'pong' });
@@ -282,6 +365,25 @@ export class Round {
     }
 
     return out;
+  }
+
+  private canClaimWin(player: Player, discard: Tile, fromIdx: number): boolean {
+    if (!this.winValidator) return true;
+    const context: WinContext = {
+      winnerSeat: player.seatWind,
+      prevailingWind: this.prevailingWind,
+      fromSeat: this.players[fromIdx]!.seatWind,
+      fromKongReplacement: false,
+      fromKongRob: false,
+      fromLastTile: this.wall.isLiveExhausted(),
+      bonusTiles: player.hand.bonuses.map((b) => ({ category: b.category, index: b.index })),
+    };
+    return this.winValidator.canWin({
+      concealed: player.hand.concealed,
+      winningTile: discard,
+      exposedMelds: player.hand.melds,
+      context,
+    });
   }
 
   /** Compute the read-only snapshot a given seat sees. */
@@ -336,6 +438,20 @@ function claimsEquivalent(a: Claim, b: Claim): boolean {
     );
   }
   return true;
+}
+
+/** Return `tiles` minus one occurrence of `target` (by equality). Used to peel the winning tile out of a concealed hand. */
+function removeOneOccurrence(tiles: readonly Tile[], target: Tile): Tile[] {
+  const out: Tile[] = [];
+  let removed = false;
+  for (const t of tiles) {
+    if (!removed && t.equals(target)) {
+      removed = true;
+      continue;
+    }
+    out.push(t);
+  }
+  return out;
 }
 
 /** All chi combinations playable from `hand` against `discard`. */
