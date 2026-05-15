@@ -63,14 +63,44 @@ These three files are the project's public contract — update together whenever
 
 ## Commands
 
-Will be filled in once Phase 0 lands:
-
 ```bash
-npm run dev       # not yet wired up
-npm test          # not yet wired up
-npm run build     # not yet wired up
+npm install
+npm run dev          # Vite dev server on http://localhost:5173
+npm test             # vitest run (single pass)
+npm run test:watch   # vitest watch
+npm run typecheck    # tsc -b --noEmit (app + node projects)
+npm run lint         # eslint . (flat config in eslint.config.js)
+npm run format       # prettier --write .
+npm run build        # tsc -b && vite build → dist/
+npm run preview      # serve the production build
 ```
+
+The Vite `base` is hardcoded to `/mahjong/` so GH Pages serves the site from `dragonkyro.github.io/mahjong/`. Override with `VITE_BASE=/` for clean local URLs.
+
+## Path aliases
+
+Configured in both `tsconfig.app.json` and `vite.config.ts`. Use these instead of relative `../../` chains:
+
+- `@core/*` → `src/core/*`
+- `@ui/*` → `src/ui/*`
+- `@store/*` → `src/store/*`
+- `@multiplayer/*` → `src/multiplayer/*`
+- `@training/*` → `src/training/*`
+- `@utils/*` → `src/utils/*`
+
+## CI
+
+`.github/workflows/deploy.yml` runs on push to `main`: install → lint → typecheck → test → build → deploy to GH Pages. Don't merge anything that breaks any of those four checks locally.
 
 ## Current phase
 
-**Phase 0 — Bootstrap.** Planning is done; next session should scaffold Vite + React + TS, install Tailwind/Zustand/PeerJS, and add the GH Pages deploy workflow. See README.md for the full phase list.
+**Phase 0 — Bootstrap: ✅ complete** (2026-05-15). Vite + React 18 + TS strict, Tailwind, Vitest + jsdom + Testing Library, ESLint flat config, Prettier, and the GH Pages workflow are in place. Smoke test passes; production build succeeds.
+
+**Phase 1 — Core domain model** is next. Build the OOP engine in `src/core/`:
+- `Tile` abstract + `SuitTile`/`HonorTile`/`BonusTile` subclasses (equality, ordering, stringification).
+- `Wall` with a seedable RNG (no `Math.random()` inside `src/core/`).
+- `Meld` abstract + `Chi`/`Pong`/`Kong`/`Pair`.
+- `Hand`, `Player` (abstract) + `HumanPlayer` skeleton.
+- Vitest unit tests for every class.
+
+See README.md for the full phase list.

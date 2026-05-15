@@ -110,15 +110,26 @@ Each phase ships a working slice. Tests land with the phase that introduces the 
 
 ## Running locally
 
-> Scripts will be wired up in Phase 0. Until then this section is aspirational.
-
 ```bash
 npm install
-npm run dev       # Vite dev server
-npm test          # Vitest
-npm run build     # production bundle for GH Pages
+npm run dev          # Vite dev server (http://localhost:5173)
+npm test             # Vitest run once
+npm run test:watch   # Vitest watch mode
+npm run typecheck    # tsc -b --noEmit across both projects
+npm run lint         # ESLint flat config
+npm run format       # Prettier write
+npm run build        # production bundle for GH Pages (dist/)
+npm run preview      # serve the built bundle locally
 ```
+
+The Vite base path is hardcoded to `/mahjong/` for GH Pages. Set `VITE_BASE=/` when previewing locally if you want clean URLs (`VITE_BASE=/ npm run preview`).
+
+## Deployment
+
+Pushing to `main` triggers [.github/workflows/deploy.yml](.github/workflows/deploy.yml), which runs lint + typecheck + tests + build, then publishes `dist/` to GitHub Pages. The site will be live at https://dragonkyro.github.io/mahjong/ once Pages is enabled in repo settings (Settings → Pages → Source: GitHub Actions).
 
 ## Status
 
-Phase 0 — planning complete, scaffolding next.
+**Phase 0 — Bootstrap: ✅ complete.** Vite + React + TS scaffold, Tailwind, Vitest, ESLint flat config, Prettier, and the GH Pages workflow are in. Smoke test passes, production build succeeds.
+
+**Next:** Phase 1 — Core domain model. Implement `Tile`, `Wall`, `Meld`, `Player` classes in `src/core/` with full unit-test coverage.

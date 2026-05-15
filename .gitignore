@@ -12,6 +12,9 @@ build/
 # Vite
 .vite/
 
+# TypeScript incremental build state
+*.tsbuildinfo
+
 # Testing
 coverage/
 *.lcov
