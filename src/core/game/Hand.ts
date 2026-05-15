@@ -92,4 +92,11 @@ export class Hand {
     }
     return this.concealedTiles.length + melded;
   }
+
+  /** Clear concealed tiles, melds, and bonuses so a fresh round can be dealt into this hand. */
+  reset(): void {
+    this.concealedTiles.length = 0;
+    this.exposedMelds.length = 0;
+    this.bonusTiles.length = 0;
+  }
 }

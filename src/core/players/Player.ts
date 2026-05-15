@@ -24,4 +24,10 @@ export abstract class Player {
   recordDiscard(tile: Tile): void {
     this.discards.push(tile);
   }
+
+  /** Clear hand and discards for a fresh round. Score (cross-round bankroll) is preserved. */
+  resetForRound(): void {
+    this.hand.reset();
+    this.discards.length = 0;
+  }
 }

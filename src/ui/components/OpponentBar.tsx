@@ -1,4 +1,7 @@
 import type { Player } from '@core/players/Player';
+import type { Tile } from '@core/tiles/Tile';
+import { TileImage } from './TileImage';
+import { tileBackUrl } from '../tileAsset';
 
 interface OpponentBarProps {
   player: Player;
@@ -6,66 +9,86 @@ interface OpponentBarProps {
   isActive?: boolean;
 }
 
-/** Compact summary of an opponent's seat: name, concealed tile count, melds, discards. */
+/**
+ * Compact summary of an opponent's seat: name, face-down concealed tiles
+ * (only the count is visible to opponents), exposed melds, bonus pile, and
+ * running score. Discards are NOT shown here — they live in the center pool.
+ */
 export function OpponentBar({ player, orientation, isActive }: OpponentBarProps) {
   const handCount = player.hand.concealed.length;
   const ringClass = isActive ? 'ring-2 ring-amber-300' : '';
-  const orientationClass =
-    orientation === 'top' ? 'flex-col items-center' : 'flex-col items-stretch';
+  const isVertical = orientation === 'left' || orientation === 'right';
+
   return (
-    <div className={`bg-felt rounded-lg p-2 ${orientationClass} flex gap-1 ${ringClass}`}>
-      <div className="text-xs opacity-80 flex justify-between gap-2">
-        <span className="font-semibold">{player.name}</span>
-        <span>
-          ({player.seatWind}) · {handCount} tiles · {player.score >= 0 ? '+' : ''}
+    <div className={`bg-felt rounded-lg p-2 flex flex-col gap-2 ${ringClass}`}>
+      <div className="text-xs opacity-90 flex justify-between gap-2 items-center">
+        <span className="font-semibold truncate">{player.name}</span>
+        <span className="opacity-80">
+          ({player.seatWind}) {player.score >= 0 ? '+' : ''}
           {player.score}
         </span>
       </div>
-      <MeldStrip melds={player.hand.melds} />
-      <DiscardGrid tiles={player.discards} />
+      <FaceDownRow count={handCount} orientation={orientation} />
+      <MeldStrip melds={player.hand.melds} vertical={isVertical} />
+      <BonusStrip bonuses={player.hand.bonuses} />
     </div>
   );
 }
 
-function MeldStrip({ melds }: { melds: ReadonlyArray<{ tiles: readonly { toString(): string }[] }> }) {
+function FaceDownRow({
+  count,
+  orientation,
+}: {
+  count: number;
+  orientation: 'top' | 'left' | 'right';
+}) {
+  if (count <= 0) return null;
+  const isVertical = orientation === 'left' || orientation === 'right';
+  const wrapClass = isVertical
+    ? 'grid grid-cols-2 gap-[1px]'
+    : 'flex flex-wrap gap-[1px]';
+  return (
+    <div className={wrapClass}>
+      {Array.from({ length: count }).map((_, i) => (
+        <img
+          key={i}
+          src={tileBackUrl()}
+          alt=""
+          className="w-5 h-7 rounded-sm border border-stone-700 bg-stone-100"
+        />
+      ))}
+    </div>
+  );
+}
+
+function MeldStrip({
+  melds,
+  vertical,
+}: {
+  melds: ReadonlyArray<{ tiles: readonly Tile[] }>;
+  vertical: boolean;
+}) {
   if (melds.length === 0) return null;
   return (
-    <div className="flex flex-wrap gap-2 text-[10px] opacity-90">
+    <div className={vertical ? 'flex flex-col gap-1' : 'flex flex-wrap gap-1'}>
       {melds.map((m, i) => (
-        <div key={i} className="flex gap-0.5">
-          {m.tiles.map((t, j) => {
-            // Need the actual Tile object to render; the upstream MeldStrip caller
-            // should pass tiles, but for simplicity we render text fallbacks here.
-            return (
-              <span
-                key={j}
-                className="px-1 py-0.5 bg-stone-100 text-stone-900 rounded-sm border border-stone-300"
-              >
-                {t.toString()}
-              </span>
-            );
-          })}
+        <div key={i} className="flex gap-[1px] bg-stone-900/40 rounded p-0.5">
+          {m.tiles.map((t, j) => (
+            <TileImage key={j} tile={t} size="sm" />
+          ))}
         </div>
       ))}
     </div>
   );
 }
 
-function DiscardGrid({ tiles }: { tiles: ReadonlyArray<{ toString(): string }> }) {
-  if (tiles.length === 0) {
-    return <div className="text-[10px] opacity-50 italic">no discards yet</div>;
-  }
+function BonusStrip({ bonuses }: { bonuses: ReadonlyArray<Tile> }) {
+  if (bonuses.length === 0) return null;
   return (
-    <div className="flex flex-wrap gap-0.5 max-h-24 overflow-hidden">
-      {tiles.slice(-18).map((t, i) => (
-        <span
-          key={i}
-          className="px-1 py-0.5 bg-stone-200 text-stone-900 rounded-sm text-[10px] border border-stone-300"
-        >
-          {t.toString()}
-        </span>
+    <div className="flex flex-wrap gap-[1px]">
+      {bonuses.map((b, i) => (
+        <TileImage key={i} tile={b} size="sm" />
       ))}
     </div>
   );
 }
-

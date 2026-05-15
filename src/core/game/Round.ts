@@ -82,6 +82,9 @@ export class Round {
 
   /** Deal 13 tiles to each player; bonus tiles draw replacements automatically. */
   private deal(): void {
+    for (const player of this.players) {
+      player.resetForRound();
+    }
     for (let i = 0; i < 13; i++) {
       for (let p = 0; p < 4; p++) {
         const player = this.players[p]!;
@@ -144,6 +147,9 @@ export class Round {
       return this.finalizeDiscardWin(bid.playerIdx, this.activeIdx, discarded);
     }
 
+    // The claimed tile is physically moved from the discard pile into the
+    // claimer's exposed meld — remove it from the discarder's pile.
+    active.discards.pop();
     this.applyDiscardClaim(discarded, bid.playerIdx, bid.claim);
     this.activeIdx = bid.playerIdx;
     this.nextDraw = bid.claim.kind === 'kong' ? 'replacement' : 'none';

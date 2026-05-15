@@ -2,9 +2,12 @@ import { Wind } from '@core/tiles/HonorTile';
 import type { Game } from '@core/game/Game';
 import type { RoundOutcome, TurnAction, Claim, PlayerView } from '@core/game/types';
 import type { Tile } from '@core/tiles/Tile';
+import type { Player } from '@core/players/Player';
 import { OpponentBar } from './OpponentBar';
 import { PlayerHand } from './PlayerHand';
 import { CenterArea } from './CenterArea';
+import { DiscardPool } from './DiscardPool';
+import { TileImage } from './TileImage';
 import { ActionPanel, ClaimPanel } from './PendingPanel';
 import { OutcomeBanner } from './OutcomeBanner';
 
@@ -41,6 +44,7 @@ export function GameTable(props: GameTableProps) {
     props;
   const view = pending?.view;
   const seats = orderedSeats(game, mySeat);
+  const lastDiscarder = view?.lastDiscard?.from ?? null;
 
   return (
     <div className="min-h-[80vh] bg-felt-dark text-white p-4 font-cjk grid grid-cols-[200px_1fr_200px] grid-rows-[auto_1fr_auto_auto] gap-3">
@@ -55,28 +59,38 @@ export function GameTable(props: GameTableProps) {
       </div>
 
       <div className="col-start-2 row-start-2">
-        <CenterArea
+        <TableCenter
+          game={game}
+          seats={seats}
           prevailingWind={view?.prevailingWind ?? game.prevailingWind}
           dealer={view?.dealer ?? game.dealer}
           wallRemaining={view?.wallRemaining ?? 0}
-          lastDiscard={view?.lastDiscard ?? null}
-          roundNumber={game.history.length + 1}
+          lastDiscarder={lastDiscarder}
         />
       </div>
 
       <div className="col-span-3 row-start-3 flex flex-col items-center gap-2">
         <div className="text-xs opacity-70">
-          You — {seats.you.seatWind} seat · score {seats.you.score >= 0 ? '+' : ''}
-          {seats.you.score} · bonus:{' '}
-          {seats.you.hand.bonuses.map((b) => b.toString()).join(' ') || '—'}
+          You — {seats.you.seatWind} seat · bankroll {seats.you.score >= 0 ? '+' : ''}
+          {seats.you.score}
         </div>
         {seats.you.hand.melds.length > 0 && (
-          <div className="text-[11px] flex gap-2 opacity-90">
-            Melds:{' '}
+          <div className="flex gap-2 items-center">
+            <span className="text-[11px] opacity-70">Melds:</span>
             {seats.you.hand.melds.map((m, i) => (
-              <span key={i} className="bg-stone-200 text-stone-900 rounded px-1">
-                {m.toString()}
-              </span>
+              <div key={i} className="flex gap-[1px] bg-stone-900/40 rounded p-0.5">
+                {m.tiles.map((t, j) => (
+                  <TileImage key={j} tile={t} size="sm" />
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
+        {seats.you.hand.bonuses.length > 0 && (
+          <div className="flex gap-1 items-center">
+            <span className="text-[11px] opacity-70">Bonus:</span>
+            {seats.you.hand.bonuses.map((b, i) => (
+              <TileImage key={i} tile={b} size="sm" />
             ))}
           </div>
         )}
@@ -125,11 +139,73 @@ export function GameTable(props: GameTableProps) {
   );
 }
 
+interface TableCenterProps {
+  game: Game;
+  seats: Seats;
+  prevailingWind: Wind;
+  dealer: Wind;
+  wallRemaining: number;
+  lastDiscarder: Wind | null;
+}
+
+/**
+ * The four discard rivers wrapped around the central game-info card. Tries to
+ * recreate the look of a physical mahjong table: each player's discards sit in
+ * front of their seat (from the human's perspective).
+ */
+function TableCenter(props: TableCenterProps) {
+  const { game, seats, prevailingWind, dealer, wallRemaining, lastDiscarder } = props;
+  return (
+    <div className="grid grid-cols-[auto_1fr_auto] grid-rows-[auto_1fr_auto] gap-3 min-h-[360px] bg-emerald-950/40 rounded-xl p-3 border border-emerald-900/60 shadow-inner items-center justify-items-center">
+      <div className="col-start-2 row-start-1">
+        <DiscardPool
+          tiles={seats.top.discards}
+          orientation="top"
+          seatLabel={seats.top.seatWind}
+          isLastDiscarder={lastDiscarder === seats.top.seatWind}
+        />
+      </div>
+      <div className="col-start-1 row-start-2">
+        <DiscardPool
+          tiles={seats.left.discards}
+          orientation="left"
+          seatLabel={seats.left.seatWind}
+          isLastDiscarder={lastDiscarder === seats.left.seatWind}
+        />
+      </div>
+      <div className="col-start-2 row-start-2">
+        <CenterArea
+          prevailingWind={prevailingWind}
+          dealer={dealer}
+          wallRemaining={wallRemaining}
+          roundNumber={game.history.length + 1}
+        />
+      </div>
+      <div className="col-start-3 row-start-2">
+        <DiscardPool
+          tiles={seats.right.discards}
+          orientation="right"
+          seatLabel={seats.right.seatWind}
+          isLastDiscarder={lastDiscarder === seats.right.seatWind}
+        />
+      </div>
+      <div className="col-start-2 row-start-3">
+        <DiscardPool
+          tiles={seats.you.discards}
+          orientation="bottom"
+          seatLabel={seats.you.seatWind}
+          isLastDiscarder={lastDiscarder === seats.you.seatWind}
+        />
+      </div>
+    </div>
+  );
+}
+
 interface Seats {
-  you: Game['players'][number];
-  right: Game['players'][number];
-  top: Game['players'][number];
-  left: Game['players'][number];
+  you: Player;
+  right: Player;
+  top: Player;
+  left: Player;
 }
 
 /** Rotate the four players so the human (`mySeat`) sits at the bottom, 下家 on the right, 對家 on top, 上家 on the left. */
