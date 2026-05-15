@@ -12,6 +12,8 @@ export interface GameTablePending {
   kind: 'action' | 'claim';
   view: PlayerView;
   drawn?: Tile | null;
+  /** True only on action pending — engine validator has approved a self-draw on `drawn`. */
+  canDeclareWin?: boolean;
   discard?: Tile;
   options?: readonly Claim[];
 }
@@ -58,6 +60,7 @@ export function GameTable(props: GameTableProps) {
           dealer={view?.dealer ?? game.dealer}
           wallRemaining={view?.wallRemaining ?? 0}
           lastDiscard={view?.lastDiscard ?? null}
+          roundNumber={game.history.length + 1}
         />
       </div>
 
@@ -93,6 +96,7 @@ export function GameTable(props: GameTableProps) {
           <ActionPanel
             drawn={pending.drawn ?? null}
             hand={pending.view.self.hand}
+            canDeclareWin={pending.canDeclareWin ?? false}
             onResolve={resolveAction}
           />
         )}
@@ -106,6 +110,8 @@ export function GameTable(props: GameTableProps) {
         {outcome && !pending && (
           <OutcomeBanner
             outcome={outcome}
+            players={game.players}
+            scoreTable={game.scoreTable}
             onNewRound={onNewRound ?? (() => {})}
           />
         )}

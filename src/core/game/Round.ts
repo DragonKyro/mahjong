@@ -99,11 +99,11 @@ export class Round {
     let drawn: Tile | null = null;
     this.drewFromKongReplacement = false;
     if (this.nextDraw === 'live') {
-      if (this.wall.isLiveExhausted()) return { kind: 'draw' };
+      if (this.wall.isLiveExhausted()) return { kind: 'draw', dealer: this.dealer };
       drawn = this.drawThroughBonuses(active, 'live');
       active.hand.add(drawn);
     } else if (this.nextDraw === 'replacement') {
-      if (this.wall.deadRemaining() === 0) return { kind: 'draw' };
+      if (this.wall.deadRemaining() === 0) return { kind: 'draw', dealer: this.dealer };
       drawn = this.drawThroughBonuses(active, 'replacement');
       active.hand.add(drawn);
       this.drewFromKongReplacement = true;
@@ -113,7 +113,7 @@ export class Round {
     let action = await active.policy.chooseAction(this.viewFor(this.activeIdx), drawn);
     while (action.kind === 'self-kong' || action.kind === 'add-kong') {
       this.applyOwnKong(active, action);
-      if (this.wall.deadRemaining() === 0) return { kind: 'draw' };
+      if (this.wall.deadRemaining() === 0) return { kind: 'draw', dealer: this.dealer };
       drawn = this.drawThroughBonuses(active, 'replacement');
       active.hand.add(drawn);
       this.drewFromKongReplacement = true;
@@ -185,6 +185,7 @@ export class Round {
       winner: active.seatWind,
       from: null,
       winningTile,
+      dealer: this.dealer,
       ...(faan ? { faan } : {}),
     };
   }
@@ -216,6 +217,7 @@ export class Round {
       winner: claimer.seatWind,
       from: discarder.seatWind,
       winningTile,
+      dealer: this.dealer,
       ...(faan ? { faan } : {}),
     };
   }

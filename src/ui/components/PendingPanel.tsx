@@ -7,12 +7,12 @@ interface ActionPanelProps {
   onDiscard?: (tile: Tile) => void; // discard handled at PlayerHand level
   // Surface kong / win actions when they're legal — Phase 4 MVP just shows a hint
   hand: readonly Tile[];
+  /** True only when the engine's win validator approves a self-draw on `drawn`. */
+  canDeclareWin: boolean;
   onResolve: (action: TurnAction) => void;
 }
 
-export function ActionPanel({ drawn, hand, onResolve }: ActionPanelProps) {
-  // Detect available special actions: self-kong (4 of a kind in hand), win
-  // (we let the user try — engine rejects if not actually winning).
+export function ActionPanel({ drawn, hand, canDeclareWin, onResolve }: ActionPanelProps) {
   const fourOfKind = findFourOfKind(hand);
 
   return (
@@ -37,7 +37,7 @@ export function ActionPanel({ drawn, hand, onResolve }: ActionPanelProps) {
             Declare kong (暗槓 {fourOfKind.toString()})
           </button>
         )}
-        {drawn && (
+        {canDeclareWin && (
           <button
             type="button"
             className="px-3 py-1 bg-emerald-700 hover:bg-emerald-600 rounded text-sm"

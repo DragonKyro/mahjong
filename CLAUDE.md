@@ -206,11 +206,24 @@ Configured in both `tsconfig.app.json` and `vite.config.ts`. Use these instead o
 **Shared rendering:** `GameTable` (in `src/ui/components/`) is now the stateless board renderer. `Board` (single-player) and `MultiplayerPage` both wrap it.
 
 **Phase 7 MVP gaps** (deferred):
-- **Single round only**; no continuous play. Add a "Next round" button + multi-round state in the host.
 - **No reconnect**; if any peer drops, RemotePolicies abort and the round dies. Add a reconnect handshake using the same peer ID.
 - **No version handshake**; peers on different code versions will desync silently. Add a `hello` payload that includes a version stamp and reject mismatched joins.
 - **No graceful host-leaves**; `host-left` message exists but UI handling is minimal.
 - **PeerJS public broker**; reliable but rate-limited. For higher load, run a private broker.
+
+**Post-Phase-7 — Multi-round + full HK Old Style settlement: ✅ complete** (2026-05-15).
+
+- **Multi-round play in both modes.** Single-player already worked. Multiplayer now does too: `multiplayerStore.ensureGame()` builds the `Game` + players exactly once per session, and `runRound(seed)` calls `activeGame.playRound(...)` each time. `startRound` (host action) broadcasts `start-round` for both the initial round and every subsequent one. Clients call `runRound` when they receive the broadcast. Scores, dealer state, and prevailing wind persist across rounds.
+- **`RulesConfig.dealerDoubling: boolean`** (default `true`) enables the standard HK Old Style 2× dealer multiplier. **`ScoreTable.scoreWin` now takes `dealer: Wind`** and implements the full settlement: discarder pays `2V` + other losers pay `V` on a discard win; every loser pays `V` on self-draw; each individual payment doubles if the payer or receiver is the dealer (multipliers stack). See [ScoreTable.ts](src/core/scoring/ScoreTable.ts) + [ScoreTable.test.ts](src/core/scoring/ScoreTable.test.ts) for the schedule.
+- **`RoundOutcome` carries `dealer: Wind`** (the dealer at scoring time, before `Game.advanceDealer` rotates). Both `win` and `draw` outcomes include it. The UI uses this to recompute the per-seat deltas in `OutcomeBanner` without depending on the live `game.dealer` (which may have already rotated).
+- **Self-draw win button is gated by the validator.** `UIPolicy` now takes an optional `WinValidator` in its constructor; when present, it computes `canDeclareWin` (using a conservative `WinContext` — situational bonuses 嶺上開花/海底 default to false) and passes it through `ActionRequest`. The store threads this into `pending.canDeclareWin` and `GameTable` → `ActionPanel` hides the button when false. Trust mode (no validator) is preserved for tests. The engine's `throw` in `Round.finalizeSelfDrawWin` stays as a safety net.
+- **Scoresheet in `OutcomeBanner`.** Banner takes `players` + `scoreTable` and re-runs `scoreTable.scoreWin(...)` to show per-seat round Δ + running bankroll for all four seats.
+- **Round counter in `CenterArea`** via `game.history.length + 1`.
+
+**Conventions worth carrying forward:**
+- When a new field needs to flow from the engine to the UI, prefer adding it to the value objects (`RoundOutcome`, `PlayerView`) rather than reading live engine state — these are designed serializable (multiplayer-safe).
+- `ScoreTable` is a pure value-computer. UI code can re-call `scoreWin` to derive presentations without touching engine state.
+- `UIPolicy` is the canonical place to compute "what the UI is allowed to offer the user" — validator-driven gating belongs there, not in React components.
 
 **Phase 8 — Polish & deploy** is next.
 - Tile-move animations, optional sound.

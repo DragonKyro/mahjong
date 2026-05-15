@@ -6,6 +6,8 @@ import { mulberry32 } from '@utils/rng';
 import { RandomAI } from '@core/ai/RandomAI';
 import { EfficiencyAI } from '@core/ai/EfficiencyAI';
 import { DefensiveAI } from '@core/ai/DefensiveAI';
+import { HKOldStyleWinValidator } from '@core/scoring/HKOldStyleWinValidator';
+import { DEFAULT_RULES } from '@core/scoring/RulesConfig';
 import type { PlayerPolicy } from '@core/players/PlayerPolicy';
 import type { RoundOutcome, TurnAction, Claim } from '@core/game/types';
 import type { SeatedPlayers } from '@core/game/Round';
@@ -64,14 +66,21 @@ function buildPlayers(uiPolicy: UIPolicy, difficulty: Difficulty): SeatedPlayers
 }
 
 export const useGameStore = create<GameStore>((set, get) => {
-  const uiPolicy = new UIPolicy({
-    onActionRequest: (req) => {
-      set({ pending: { kind: 'action', ...req }, tick: get().tick + 1 });
+  // Share one validator instance with the Game (which constructs its own equivalent
+  // from DEFAULT_RULES). Both must agree on `canWin` so the UI's win-button gate
+  // matches what the engine will accept.
+  const winValidator = new HKOldStyleWinValidator(DEFAULT_RULES);
+  const uiPolicy = new UIPolicy(
+    {
+      onActionRequest: (req) => {
+        set({ pending: { kind: 'action', ...req }, tick: get().tick + 1 });
+      },
+      onClaimRequest: (req) => {
+        set({ pending: { kind: 'claim', ...req }, tick: get().tick + 1 });
+      },
     },
-    onClaimRequest: (req) => {
-      set({ pending: { kind: 'claim', ...req }, tick: get().tick + 1 });
-    },
-  });
+    winValidator,
+  );
 
   const onTurnEnd = async (): Promise<void> => {
     set({ tick: get().tick + 1 });

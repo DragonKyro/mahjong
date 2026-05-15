@@ -50,7 +50,12 @@ export function Board() {
 
   const tablePending: GameTablePending | null = pending
     ? pending.kind === 'action'
-      ? { kind: 'action', view: pending.view, drawn: pending.drawn }
+      ? {
+          kind: 'action',
+          view: pending.view,
+          drawn: pending.drawn,
+          canDeclareWin: pending.canDeclareWin,
+        }
       : { kind: 'claim', view: pending.view, discard: pending.discard, options: pending.options }
     : null;
 

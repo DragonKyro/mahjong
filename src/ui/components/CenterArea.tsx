@@ -7,12 +7,21 @@ interface CenterAreaProps {
   dealer: Wind;
   wallRemaining: number;
   lastDiscard: { tile: Tile; from: Wind } | null;
+  roundNumber: number;
 }
 
-export function CenterArea({ prevailingWind, dealer, wallRemaining, lastDiscard }: CenterAreaProps) {
+export function CenterArea({
+  prevailingWind,
+  dealer,
+  wallRemaining,
+  lastDiscard,
+  roundNumber,
+}: CenterAreaProps) {
   return (
     <div className="flex flex-col items-center justify-center gap-3 bg-felt rounded-lg p-4 min-h-[200px]">
       <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs opacity-80">
+        <span>Round</span>
+        <span className="font-bold text-amber-300">#{roundNumber}</span>
         <span>Prevailing wind</span>
         <span className="font-bold text-amber-300">{prevailingWind}</span>
         <span>Dealer (莊)</span>

@@ -98,7 +98,9 @@ export type RoundOutcome =
       winner: Wind;
       from: Wind | null;
       winningTile: Tile;
+      /** Dealer at the moment the round ended (before any post-round rotation). */
+      dealer: Wind;
       /** Present when a WinValidator + FaanCalculator are configured on the Round. */
       faan?: FaanResult;
     }
-  | { kind: 'draw' }; // 流局
+  | { kind: 'draw'; dealer: Wind }; // 流局

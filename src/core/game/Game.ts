@@ -87,6 +87,7 @@ export class Game {
       faan: outcome.faan.total,
       winnerSeat: outcome.winner,
       fromSeat: outcome.from,
+      dealer: this._dealer,
     });
     for (const w of SEAT_ORDER) {
       const idx = SEAT_ORDER.indexOf(w);

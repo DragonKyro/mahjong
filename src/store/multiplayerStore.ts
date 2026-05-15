@@ -3,6 +3,8 @@ import { Game } from '@core/game/Game';
 import { HumanPlayer } from '@core/players/HumanPlayer';
 import { Wind, SEAT_ORDER } from '@core/tiles/HonorTile';
 import { mulberry32 } from '@utils/rng';
+import { HKOldStyleWinValidator } from '@core/scoring/HKOldStyleWinValidator';
+import { DEFAULT_RULES } from '@core/scoring/RulesConfig';
 import { Connection, type ConnectionRole } from '@multiplayer/Connection';
 import { RemotePolicy } from '@multiplayer/RemotePolicy';
 import {
@@ -51,6 +53,7 @@ interface MultiplayerStore {
   host: (name: string) => void;
   join: (hostId: string, name: string) => void;
   leave: () => void;
+  /** Host-only: broadcast start-round + run locally. Reuses the existing Game (scores persist). */
   startRound: () => void;
 
   // User-input dispatchers (mirrors gameStore)
@@ -64,6 +67,8 @@ let connection: Connection | null = null;
 let remotePolicies: Map<Wind, RemotePolicy> = new Map();
 let uiPolicy: UIPolicy | null = null;
 let activeGame: Game | null = null;
+/** Shared validator instance — same default rules the Game uses. */
+const sharedWinValidator = new HKOldStyleWinValidator(DEFAULT_RULES);
 
 function resetRuntime(): void {
   connection?.destroy();
@@ -112,17 +117,22 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => {
   }
 
   function buildUIPolicy(): UIPolicy {
-    return new UIPolicy({
-      onActionRequest: (req) => {
-        set({ pending: { kind: 'action', ...req }, tick: get().tick + 1 });
+    return new UIPolicy(
+      {
+        onActionRequest: (req) => {
+          set({ pending: { kind: 'action', ...req }, tick: get().tick + 1 });
+        },
+        onClaimRequest: (req) => {
+          set({ pending: { kind: 'claim', ...req }, tick: get().tick + 1 });
+        },
       },
-      onClaimRequest: (req) => {
-        set({ pending: { kind: 'claim', ...req }, tick: get().tick + 1 });
-      },
-    });
+      sharedWinValidator,
+    );
   }
 
-  function buildPlayersForSeed(mySeat: Wind): SeatedPlayers {
+  /** Build players + Game once per multiplayer session. Reused across rounds so scores persist. */
+  function ensureGame(mySeat: Wind): Game {
+    if (activeGame) return activeGame;
     uiPolicy = buildUIPolicy();
     remotePolicies = new Map();
     const players = SEAT_ORDER.map((wind) => {
@@ -134,22 +144,22 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => {
       const lobby = get().lobby.find((l) => seatToWind(l.seat) === wind);
       return new HumanPlayer(lobby?.name ?? wind, wind, remote);
     }) as unknown as SeatedPlayers;
-    return players;
-  }
-
-  async function beginRound(seed: number): Promise<void> {
-    const mySeat = get().mySeat;
-    if (mySeat === null) throw new Error('Cannot begin round without a seat');
-    const players = buildPlayersForSeed(mySeat);
     activeGame = new Game(players, {
       onTurnEnd: async () => {
         bumpTick();
         await new Promise((r) => setTimeout(r, 250));
       },
     });
-    set({ game: activeGame, status: { kind: 'playing' }, outcome: null, pending: null });
+    return activeGame;
+  }
+
+  async function runRound(seed: number): Promise<void> {
+    const mySeat = get().mySeat;
+    if (mySeat === null) throw new Error('Cannot begin round without a seat');
+    const game = ensureGame(mySeat);
+    set({ game, status: { kind: 'playing' }, outcome: null, pending: null });
     try {
-      const outcome = await activeGame.playRound(mulberry32(seed));
+      const outcome = await game.playRound(mulberry32(seed));
       set({ outcome, pending: null, status: { kind: 'finished' }, tick: get().tick + 1 });
     } catch (err) {
       const message = (err as Error).message ?? String(err);
@@ -184,7 +194,7 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => {
         return;
       }
       case 'start-round': {
-        void beginRound(msg.seed);
+        void runRound(msg.seed);
         return;
       }
       case 'action-decision':
@@ -280,8 +290,9 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => {
       if (get().role !== 'host') return;
       if (get().lobby.length < 4) return;
       const seed = (Math.random() * 0xffffffff) >>> 0;
-      connection?.send({ type: 'start-round', seed, dealer: 'E' });
-      void beginRound(seed);
+      const dealerWind = activeGame?.dealer ?? Wind.East;
+      connection?.send({ type: 'start-round', seed, dealer: windToSeat(dealerWind) });
+      void runRound(seed);
     },
 
     resolveAction: (action) => {

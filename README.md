@@ -186,6 +186,11 @@ Pushing to `main` triggers [.github/workflows/deploy.yml](.github/workflows/depl
 - Shared [GameTable](src/ui/components/GameTable.tsx) renders the board for both single-player and multiplayer.
 
 **Phase 7 MVP limitations:**
-- Plays one round only — no continuous multi-round play.
 - No reconnect; if any peer drops, the round breaks.
-- Bundle is ~290 KB JS (PeerJS adds ~100 KB) — fine for desktop, heavier on slow connections.
+- Bundle is ~296 KB JS (PeerJS adds ~100 KB) — fine for desktop, heavier on slow connections.
+
+**Multi-round play + full HK Old Style settlement: ✅ complete.**
+- Both Solo and Multiplayer now run continuous rounds. The same `Game` instance accumulates scores, rotates the dealer (連莊 on dealer win, otherwise E→S→W→N), and advances the prevailing wind when the dealer cycles back to East. The host hits "Next round" in multiplayer; clients wait for the broadcast.
+- [ScoreTable](src/core/scoring/ScoreTable.ts) now implements the standard HK Old Style payout: **discarder pays 2V, the other two losers pay V each** on a discard win; **each loser pays V** on a self-draw. The dealer doubling stacks: when the dealer pays or receives, that payment is doubled (so a dealer self-draw collects 2V from every loser, and a non-dealer win on the dealer's discard collects 4V from the dealer). Configurable via `RulesConfig.dealerDoubling`.
+- The "Declare win (自摸)" button is now hidden unless the engine's `WinValidator` approves the hand. The `UIPolicy` shares a validator instance with the `Game` and gates the button on `canDeclareWin` — incomplete hands and 雞胡 (<3 faan) no longer show the button. Discard-win claims were already engine-filtered.
+- The outcome banner now shows a per-seat scoresheet: round delta + running bankroll for all four players. The center panel also shows the round number.

@@ -6,24 +6,30 @@ export type ScoreDeltas = Map<Wind, number>;
 
 /**
  * HK Old Style payout schedule. Base unit doubles per faan starting at minFaan = 1 unit,
- * capped at limitFaan units.
+ * capped at limitFaan units:
  *
  *   3 faan = 1u, 4 = 2u, 5 = 4u, 6 = 8u, 7 = 16u, 8 = 32u, 9 = 64u, 10 = 128u,
  *   11 = 256u, 12 = 512u, 13+ = 1024u (limit hand).
  *
- * Payout rules:
- *   - 自摸 (self-draw): each of the three non-winners pays the winner `unit` each;
- *     winner receives `3 * unit`.
- *   - 放炮 (discard): the discarder pays the winner `unit`; other seats pay nothing.
+ * Settlement (`V = unitFor(faan)`):
  *
- * This implementation intentionally omits the dealer-double common in some HK
- * variants — Phase 3 keeps the table minimal so it can be tightened later in a
- * dedicated scoring pass.
+ *   - 自摸 (self-draw): every loser pays `V` to the winner.
+ *   - 食糊 (discard): the discarder pays `2V`; the other two losers pay `V` each.
+ *
+ * Dealer doubling (`config.dealerDoubling`, default true): each individual payment
+ * is multiplied by 2 if the dealer is the receiver (winner === dealer), and by 2
+ * again if the payer is the dealer. The two multipliers stack independently — a
+ * dealer self-drawing collects `2V` from every loser; a non-dealer winning on the
+ * dealer's discard collects `4V` from the dealer (`2V` discarder × 2 dealer) plus
+ * `V` from each of the other two losers.
+ *
+ * References: Wikipedia "Hong Kong mahjong scoring rules"; Mahjong Wiki
+ * "Hong Kong Old Style Scoring".
  */
 export class ScoreTable {
   constructor(private readonly config: RulesConfig) {}
 
-  /** Compute the unit value for a given faan total (clamped to config bounds). */
+  /** Compute the unit value `V` for a given faan total (clamped to config bounds). */
   unitFor(faan: number): number {
     const clamped = Math.max(this.config.minFaan, Math.min(faan, this.config.limitFaan));
     const stepsAboveMin = clamped - this.config.minFaan;
@@ -33,20 +39,21 @@ export class ScoreTable {
   scoreWin(opts: {
     faan: number;
     winnerSeat: Wind;
+    /** null = self-draw (自摸); else the seat that fed the winning tile (放炮). */
     fromSeat: Wind | null;
+    dealer: Wind;
   }): ScoreDeltas {
     const deltas: ScoreDeltas = new Map(SEAT_ORDER.map((w) => [w, 0]));
-    const unit = this.unitFor(opts.faan);
-    if (opts.fromSeat === null) {
-      // Self-draw: each loser pays `unit`.
-      for (const w of SEAT_ORDER) {
-        if (w === opts.winnerSeat) continue;
-        deltas.set(w, -unit);
-        deltas.set(opts.winnerSeat, (deltas.get(opts.winnerSeat) ?? 0) + unit);
-      }
-    } else {
-      deltas.set(opts.fromSeat, -unit);
-      deltas.set(opts.winnerSeat, unit);
+    const V = this.unitFor(opts.faan);
+    const winnerDouble = this.config.dealerDoubling && opts.winnerSeat === opts.dealer ? 2 : 1;
+
+    for (const loser of SEAT_ORDER) {
+      if (loser === opts.winnerSeat) continue;
+      const baseShare = opts.fromSeat !== null && loser === opts.fromSeat ? 2 * V : V;
+      const loserDouble = this.config.dealerDoubling && loser === opts.dealer ? 2 : 1;
+      const payment = baseShare * winnerDouble * loserDouble;
+      deltas.set(loser, (deltas.get(loser) ?? 0) - payment);
+      deltas.set(opts.winnerSeat, (deltas.get(opts.winnerSeat) ?? 0) + payment);
     }
     return deltas;
   }

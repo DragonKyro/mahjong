@@ -144,8 +144,10 @@ function PlayingScreen() {
   const pending = useMultiplayerStore((s) => s.pending);
   const outcome = useMultiplayerStore((s) => s.outcome);
   const mySeat = useMultiplayerStore((s) => s.mySeat);
+  const role = useMultiplayerStore((s) => s.role);
   const resolveAction = useMultiplayerStore((s) => s.resolveAction);
   const resolveClaim = useMultiplayerStore((s) => s.resolveClaim);
+  const startRound = useMultiplayerStore((s) => s.startRound);
   const leave = useMultiplayerStore((s) => s.leave);
   const status = useMultiplayerStore((s) => s.status);
 
@@ -155,9 +157,18 @@ function PlayingScreen() {
 
   const tablePending: GameTablePending | null = pending
     ? pending.kind === 'action'
-      ? { kind: 'action', view: pending.view, drawn: pending.drawn }
+      ? {
+          kind: 'action',
+          view: pending.view,
+          drawn: pending.drawn,
+          canDeclareWin: pending.canDeclareWin,
+        }
       : { kind: 'claim', view: pending.view, discard: pending.discard, options: pending.options }
     : null;
+
+  // The host advances to the next round; clients wait for the broadcast.
+  const isFinished = status.kind === 'finished';
+  const hostCanAdvance = isFinished && role === 'host';
 
   return (
     <div>
@@ -173,13 +184,18 @@ function PlayingScreen() {
       <GameTable
         game={game}
         pending={tablePending}
-        outcome={status.kind === 'finished' ? outcome : null}
+        outcome={isFinished ? outcome : null}
         mySeat={mySeat}
         inProgress={status.kind === 'playing'}
         resolveAction={resolveAction}
         resolveClaim={resolveClaim}
-        // No "Next round" button in MVP — multiplayer plays one round only.
+        {...(hostCanAdvance ? { onNewRound: startRound } : {})}
       />
+      {isFinished && role === 'client' && (
+        <div className="text-center text-sm opacity-70 pb-4 font-cjk">
+          Waiting for host to start the next round…
+        </div>
+      )}
       {/* Re-anchor Wind enum so the import lint stays satisfied even when unused above. */}
       <span className="hidden">{Wind.East}</span>
     </div>
