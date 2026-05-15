@@ -30,6 +30,8 @@ export class Game {
   private _dealer: Wind;
   readonly history: RoundOutcome[] = [];
 
+  readonly onTurnEnd: (() => void | Promise<void>) | undefined;
+
   constructor(
     players: SeatedPlayers,
     opts?: {
@@ -37,6 +39,8 @@ export class Game {
       dealer?: Wind;
       rules?: RulesConfig;
       winValidator?: WinValidator;
+      /** Forwarded to every `Round` this game creates — runs after each turn. */
+      onTurnEnd?: () => void | Promise<void>;
     },
   ) {
     if (players[0].seatWind !== Wind.East) {
@@ -47,6 +51,7 @@ export class Game {
     this.faanCalculator = new FaanCalculator(this.rules);
     this.scoreTable = new ScoreTable(this.rules);
     this.winValidator = opts?.winValidator ?? new HKOldStyleWinValidator(this.rules);
+    this.onTurnEnd = opts?.onTurnEnd;
     this._prevailingWind = opts?.prevailingWind ?? Wind.East;
     this._dealer = opts?.dealer ?? Wind.East;
   }
@@ -65,6 +70,7 @@ export class Game {
     const round = new Round(this.players, wall, this._prevailingWind, this._dealer, {
       winValidator: this.winValidator,
       faanCalculator: this.faanCalculator,
+      ...(this.onTurnEnd ? { onTurnEnd: this.onTurnEnd } : {}),
     });
     const outcome = await round.play();
     this.history.push(outcome);

@@ -32,6 +32,12 @@ export class Round {
   readonly dealer: Wind;
   readonly winValidator: WinValidator | undefined;
   readonly faanCalculator: FaanCalculator | undefined;
+  /**
+   * Optional hook called after every turn (after the discard + claim resolution
+   * has fully settled, before the next draw). The UI uses it to inject a small
+   * pause so users can see AI actions land before the next AI moves.
+   */
+  readonly onTurnEnd: (() => void | Promise<void>) | undefined;
 
   private activeIdx: number;
   private lastDiscard: { tile: Tile; fromIdx: number } | null = null;
@@ -44,7 +50,11 @@ export class Round {
     wall: Wall,
     prevailingWind: Wind,
     dealer: Wind,
-    opts?: { winValidator?: WinValidator; faanCalculator?: FaanCalculator },
+    opts?: {
+      winValidator?: WinValidator;
+      faanCalculator?: FaanCalculator;
+      onTurnEnd?: () => void | Promise<void>;
+    },
   ) {
     if (players[0].seatWind !== Wind.East) {
       throw new Error('Round expects players in [East, South, West, North] order');
@@ -55,6 +65,7 @@ export class Round {
     this.dealer = dealer;
     this.winValidator = opts?.winValidator;
     this.faanCalculator = opts?.faanCalculator;
+    this.onTurnEnd = opts?.onTurnEnd;
     this.activeIdx = SEAT_ORDER.indexOf(dealer);
   }
 
@@ -65,6 +76,7 @@ export class Round {
     while (true) {
       const outcome = await this.runTurn();
       if (outcome !== null) return outcome;
+      if (this.onTurnEnd) await this.onTurnEnd();
     }
   }
 

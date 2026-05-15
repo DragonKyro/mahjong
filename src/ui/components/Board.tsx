@@ -1,4 +1,4 @@
-import { useGameStore } from '@store/gameStore';
+import { useGameStore, DIFFICULTIES } from '@store/gameStore';
 import { OpponentBar } from './OpponentBar';
 import { PlayerHand } from './PlayerHand';
 import { CenterArea } from './CenterArea';
@@ -16,6 +16,8 @@ export function Board() {
   const pending = useGameStore((s) => s.pending);
   const outcome = useGameStore((s) => s.outcome);
   const inProgress = useGameStore((s) => s.inProgress);
+  const difficulty = useGameStore((s) => s.difficulty);
+  const setDifficulty = useGameStore((s) => s.setDifficulty);
   const startRound = useGameStore((s) => s.startRound);
   const resolveAction = useGameStore((s) => s.resolveAction);
   const resolveClaim = useGameStore((s) => s.resolveClaim);
@@ -25,9 +27,23 @@ export function Board() {
       <div className="flex flex-col items-center justify-center min-h-screen gap-4 p-8 bg-felt-dark text-white font-cjk">
         <h1 className="text-4xl font-bold">廣東麻雀</h1>
         <p className="opacity-80">Cantonese Mahjong</p>
+        <label className="flex flex-col items-center gap-1 mt-4">
+          <span className="text-sm opacity-70">AI difficulty</span>
+          <select
+            value={difficulty}
+            onChange={(e) => setDifficulty(e.target.value as typeof difficulty)}
+            className="bg-stone-700 text-white rounded px-3 py-1"
+          >
+            {DIFFICULTIES.map((d) => (
+              <option key={d.value} value={d.value}>
+                {d.label}
+              </option>
+            ))}
+          </select>
+        </label>
         <button
           type="button"
-          className="mt-4 px-6 py-2 bg-amber-700 hover:bg-amber-600 rounded text-lg"
+          className="mt-2 px-6 py-2 bg-amber-700 hover:bg-amber-600 rounded text-lg"
           onClick={() => void startRound()}
         >
           Start round

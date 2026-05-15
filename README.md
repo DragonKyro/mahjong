@@ -148,7 +148,7 @@ Pushing to `main` triggers [.github/workflows/deploy.yml](.github/workflows/depl
 - [ScoreTable](src/core/scoring/ScoreTable.ts) — base unit doubles per faan from `minFaan`, caps at `limitFaan`. 自摸 = each loser pays; 放炮 = discarder pays alone.
 - `Round` ([src/core/game/Round.ts](src/core/game/Round.ts)) now filters the `win` claim option through the validator and attaches a `FaanResult` to winning outcomes. `Game` ([src/core/game/Game.ts](src/core/game/Game.ts)) applies score deltas after each round.
 
-**Phase 4 — Single-player UI: ✅ MVP complete.** First playable build.
+**Phase 4 — Single-player UI: ✅ MVP complete.**
 - **Async engine refactor:** `Round.play()` and `Game.playRound()` are now `async`, and `PlayerPolicy.chooseAction`/`chooseClaim` accept `T | Promise<T>` returns. AI/test policies stay synchronous; the new UI policy returns a Promise that resolves when the user clicks.
 - **Tile artwork** vendored from [FluffyStuff/riichi-mahjong-tiles](https://github.com/FluffyStuff/riichi-mahjong-tiles) (CC0). 36 SVGs in [public/tiles/](public/tiles/); flowers/seasons use a unicode-glyph fallback for now. See [CREDITS.md](CREDITS.md).
 - **State bridge:** [src/store/UIPolicy.ts](src/store/UIPolicy.ts) plus [src/store/gameStore.ts](src/store/gameStore.ts) (Zustand). The store owns one `Game`, parks the engine on each pending decision, and exposes `resolveAction` / `resolveClaim` for the UI.
@@ -161,4 +161,11 @@ Pushing to `main` triggers [.github/workflows/deploy.yml](.github/workflows/depl
 - Opponent hands and melds render as text fallbacks in the side bars rather than full tile images.
 - Robbing the kong (搶槓), 九蓮寶燈, and multi-winner discards remain deferred from Phase 3.
 
-**Next:** Phase 5 — AI opponents (shanten calculator + efficiency + defensive heuristics).
+**Phase 5 — AI opponents: ✅ complete.** Real opponents driven by a shanten engine.
+- [Shanten](src/core/ai/Shanten.ts) — recursive decomposer that scores a hand against the standard 4-set+pair target plus 七對 and 十三么 special hands. Exposes `count`, `bestDiscard`, and `waits`. Also feeds the Phase 6 trainer.
+- [RandomAI](src/core/ai/RandomAI.ts) — beginner tier; uniformly random discards, never claims.
+- [EfficiencyAI](src/core/ai/EfficiencyAI.ts) — intermediate tier; picks the shanten-minimising discard, declares 自摸 / concealed kong when legal, claims pong/kong when it preserves shanten.
+- **Difficulty selector** on the start screen (Beginner / Intermediate); `gameStore.setDifficulty` rebuilds the table with the chosen AI when the next round starts.
+- **`onTurnEnd` hook on `Round`** — UI store injects a ~350 ms pause between turns so AI actions render visibly instead of jumping all at once.
+
+**Next:** Phase 6 — Training mode (probability-optimal discard quiz built on the shanten engine).

@@ -1,9 +1,11 @@
 import { create } from 'zustand';
 import { Game } from '@core/game/Game';
 import { HumanPlayer } from '@core/players/HumanPlayer';
-import { ScriptedPolicy } from '@core/players/ScriptedPolicy';
 import { Wind } from '@core/tiles/HonorTile';
 import { mulberry32 } from '@utils/rng';
+import { RandomAI } from '@core/ai/RandomAI';
+import { EfficiencyAI } from '@core/ai/EfficiencyAI';
+import type { PlayerPolicy } from '@core/players/PlayerPolicy';
 import type { RoundOutcome, TurnAction, Claim } from '@core/game/types';
 import type { SeatedPlayers } from '@core/game/Round';
 import { UIPolicy, type ActionRequest, type ClaimRequest } from './UIPolicy';
@@ -12,9 +14,19 @@ type PendingDecision =
   | ({ kind: 'action' } & ActionRequest)
   | ({ kind: 'claim' } & ClaimRequest);
 
+export type Difficulty = 'beginner' | 'intermediate';
+
+const DIFFICULTY_LABEL: Record<Difficulty, string> = {
+  beginner: 'Beginner (random discards)',
+  intermediate: 'Intermediate (shanten-optimal)',
+};
+
+/** Pause between turns so the UI can render AI actions before the next AI moves. */
+const TURN_END_DELAY_MS = 350;
+
 interface GameStore {
-  /** Active match. Null before the first round. */
   game: Game | null;
+  difficulty: Difficulty;
   /** Tick counter — bumped on every engine event so React re-derives. */
   tick: number;
   /** What the engine is currently asking the human player. */
@@ -24,23 +36,27 @@ interface GameStore {
   /** True while a round is mid-play. */
   inProgress: boolean;
 
+  setDifficulty: (d: Difficulty) => void;
   startRound: () => Promise<void>;
   resolveAction: (action: TurnAction) => void;
   resolveClaim: (claim: Claim) => void;
 }
 
-/**
- * Build four seated players: human at East, three passive AIs elsewhere.
- * The passive AI policy (Phase 4 placeholder) discards whatever it just drew
- * and never claims — Phase 5 will replace it with real heuristics.
- */
-function buildPlayers(uiPolicy: UIPolicy): SeatedPlayers {
-  const ai = new ScriptedPolicy();
+export const DIFFICULTIES: ReadonlyArray<{ value: Difficulty; label: string }> = (
+  ['beginner', 'intermediate'] as const
+).map((d) => ({ value: d, label: DIFFICULTY_LABEL[d] }));
+
+function aiPolicyFor(difficulty: Difficulty): PlayerPolicy {
+  if (difficulty === 'beginner') return new RandomAI();
+  return new EfficiencyAI();
+}
+
+function buildPlayers(uiPolicy: UIPolicy, difficulty: Difficulty): SeatedPlayers {
   return [
     new HumanPlayer('You', Wind.East, uiPolicy),
-    new HumanPlayer('South', Wind.South, ai),
-    new HumanPlayer('West', Wind.West, ai),
-    new HumanPlayer('North', Wind.North, ai),
+    new HumanPlayer('South', Wind.South, aiPolicyFor(difficulty)),
+    new HumanPlayer('West', Wind.West, aiPolicyFor(difficulty)),
+    new HumanPlayer('North', Wind.North, aiPolicyFor(difficulty)),
   ];
 }
 
@@ -54,18 +70,29 @@ export const useGameStore = create<GameStore>((set, get) => {
     },
   });
 
+  const onTurnEnd = async (): Promise<void> => {
+    set({ tick: get().tick + 1 });
+    await new Promise((r) => setTimeout(r, TURN_END_DELAY_MS));
+  };
+
   return {
     game: null,
+    difficulty: 'intermediate',
     tick: 0,
     pending: null,
     outcome: null,
     inProgress: false,
 
+    setDifficulty: (d) => {
+      // Changing difficulty drops the in-progress game; the next startRound builds fresh players.
+      set({ difficulty: d, game: null, outcome: null, pending: null });
+    },
+
     startRound: async () => {
       let game = get().game;
       if (!game) {
-        const players = buildPlayers(uiPolicy);
-        game = new Game(players);
+        const players = buildPlayers(uiPolicy, get().difficulty);
+        game = new Game(players, { onTurnEnd });
         set({ game });
       }
       set({ outcome: null, pending: null, inProgress: true });
@@ -73,8 +100,6 @@ export const useGameStore = create<GameStore>((set, get) => {
         const outcome = await game.playRound(mulberry32(Date.now()));
         set({ outcome, pending: null, inProgress: false, tick: get().tick + 1 });
       } catch (err) {
-        // Engine threw (e.g. illegal action from a buggy policy). Surface the
-        // error in the console for now; UI will catch this in a later sweep.
         console.error('Round failed:', err);
         set({ pending: null, inProgress: false });
       }

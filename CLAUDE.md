@@ -123,7 +123,7 @@ Configured in both `tsconfig.app.json` and `vite.config.ts`. Use these instead o
 - **`WinContext` is the canonical shape for situational scoring inputs.** When adding faan rules that depend on game-state context (e.g. 搶槓), add the field to `WinContext` first and populate it in `Round.finalize*Win`, then read it in `FaanCalculator.scoreSituational`.
 - **Known gaps deferred from Phase 3:** 搶槓 (robbing the kong) is not yet implemented — the engine plumbing has the hook point at `Round.applyOwnKong` but no inter-turn win interception is wired. 九蓮寶燈 (Nine Gates) is not recognized.
 
-**Phase 4 — Single-player UI: ✅ MVP complete** (2026-05-15). 118 passing tests across 16 files.
+**Phase 4 — Single-player UI: ✅ MVP complete** (2026-05-15).
 
 **Engine-API breaking change introduced this phase:** `PlayerPolicy.chooseAction` / `chooseClaim` now return `T | Promise<T>`, and `Round.play()` / `Game.playRound()` are `async`. AI / scripted-policy code can keep returning sync values; UI policy returns a Promise. All tests `await` round/game calls.
 
@@ -146,10 +146,32 @@ Configured in both `tsconfig.app.json` and `vite.config.ts`. Use these instead o
 - No way to cancel or restart a round mid-play other than reloading the page.
 - 搶槓, 九蓮寶燈, multi-winner discards still deferred from Phase 3.
 
-**Phase 5 — AI opponents** is next.
-- `Shanten` calculator (count of tiles away from tenpai) — also feeds the Phase 6 trainer.
-- `EfficiencyAI` (maximises tile-acceptance count when discarding).
-- `DefensiveAI` (reads opponents' discard streams to avoid feeding).
-- Three difficulty tiers wired into `gameStore.startRound`.
+**Phase 5 — AI opponents: ✅ complete** (2026-05-15). 139 passing tests across 18 files.
+
+**Shanten** (`src/core/ai/Shanten.ts`) — pure functions on tile-count vectors:
+- `Shanten.count(concealed, exposedSetCount)` — returns -1 (winning), 0 (tenpai), n (n away). Tries standard, 七對, and 十三么 in parallel and returns the minimum.
+- `Shanten.bestDiscard(concealed14, exposed)` — for a post-draw hand, returns the discard that minimises 13-tile shanten. Tie-breaks by highest sort-key tile (keeps simples for waits).
+- `Shanten.waits(concealed13, exposed)` — enumerates the tiles that would complete a tenpai hand. Returns [] if not tenpai.
+- Internal `tileToIndex` / `indexToTile` map tiles to a 34-slot vector (suits 0-26, honors 27-33). Reuse them in Phase 6.
+
+**AI policies:**
+- `RandomAI` — uniformly random discard from non-bonus concealed tiles; always passes claims. Optional seeded RNG for tests.
+- `EfficiencyAI` — `Shanten.bestDiscard` for discards; declares 自摸 when `Shanten.count(hand, exposed) === -1`; declares 暗槓 on any four-of-a-kind in hand; claims pong/kong when the resulting shanten ≤ current shanten. No chi-claiming yet (rarely shanten-positive without contextual scoring).
+
+**Engine changes worth knowing about:**
+- **`onTurnEnd` hook** added to `Round` and forwarded by `Game`. Called after each turn (post-discard, post-claim resolution). The gameStore uses it to bump `tick` and `await setTimeout(350)` so AI actions render between turns. Tests that don't supply the hook are unaffected.
+- `gameStore.difficulty` (`'beginner' | 'intermediate'`) drives which AI policy fills the three AI seats. Changing difficulty drops the in-progress game; the next `startRound` rebuilds.
+- The default difficulty is `'intermediate'` (EfficiencyAI).
+
+**Phase 5 deferrals** (still open):
+- **DefensiveAI** (opponent-discard-aware) — left for a follow-up. Pure efficiency feeds the dangerous waits.
+- **Chi evaluation** — EfficiencyAI ignores chi. Add when DefensiveAI lands or when faan-aware scoring kicks in.
+- **AI faan awareness** — current AI maximises shanten only. It will sometimes win on cheap hands when a delay-and-build approach would score more.
+- **Robbing the kong** and **九蓮寶燈** — still inherited from Phase 3 deferrals.
+
+**Phase 6 — Training mode** is next.
+- Curated common-shape library (兩面 / 嵌張 / 邊張 / 單騎 / 對對聽).
+- Probability engine: given a hand + visible discards + opponents' melds, compute P(reaching tenpai or winning) for each candidate discard. Reuses `Shanten`.
+- Quiz flow: present hand → user picks discard → reveal optimal answer + reasoning. Track streaks in `localStorage`.
 
 See README.md for the full phase list.
