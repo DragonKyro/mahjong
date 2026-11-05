@@ -1,46 +1,79 @@
-import { useState } from 'react';
-import { Board } from './components/Board';
-import { TrainingPage } from './components/TrainingPage';
-import { MultiplayerPage } from './components/MultiplayerPage';
+import { useEffect, useState } from 'react';
+import { roomCodeFromUrl, savedName } from '@/net/room';
+import { useGame } from '@/store/gameStore';
+import { useNet } from '@/store/netStore';
+import { Home, type Page } from './Home';
+import { Lobby } from './Lobby';
+import { RulesPage } from './RulesPage';
+import { Table } from './Table';
+import { Training } from './Training';
 
-type Mode = 'game' | 'training' | 'multiplayer';
-
-export function App() {
-  const [mode, setMode] = useState<Mode>('game');
-  return (
-    <div className="min-h-screen bg-felt-dark text-white font-cjk">
-      <nav className="flex gap-2 p-2 bg-stone-900/60 border-b border-stone-700 text-sm">
-        <TabButton active={mode === 'game'} onClick={() => setMode('game')}>
-          廣東麻雀 · Play
-        </TabButton>
-        <TabButton active={mode === 'training'} onClick={() => setMode('training')}>
-          訓練 · Training
-        </TabButton>
-        <TabButton active={mode === 'multiplayer'} onClick={() => setMode('multiplayer')}>
-          連線 · Multiplayer
-        </TabButton>
-      </nav>
-      {mode === 'game' && <Board />}
-      {mode === 'training' && <TrainingPage />}
-      {mode === 'multiplayer' && <MultiplayerPage />}
-    </div>
-  );
+/** `?page=train` / `?page=rules` deep links. */
+function pageFromUrl(): Page {
+  try {
+    const p = new URLSearchParams(window.location.search).get('page');
+    return p === 'train' || p === 'rules' ? p : 'home';
+  } catch {
+    return 'home';
+  }
 }
 
-function TabButton({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  const base = 'px-3 py-1 rounded';
-  const cls = active ? `${base} bg-amber-700` : `${base} bg-stone-700 hover:bg-stone-600`;
+export function App() {
+  const [page, setPage] = useState<Page>(pageFromUrl);
+  const match = useGame((s) => s.match);
+  const mode = useGame((s) => s.mode);
+  const leaveSolo = useGame((s) => s.leave);
+  const net = useNet();
+
+  // A reload (or an invite link) with ?room=CODE rejoins when a name is saved.
+  useEffect(() => {
+    const code = roomCodeFromUrl();
+    const name = savedName();
+    if (code && name && useNet.getState().status === 'idle') void useNet.getState().joinRoom(code, name);
+  }, []);
+
+  const inRoom = net.status === 'room';
+  const view = match ? 'table' : inRoom ? 'lobby' : page;
+
+  const nav = (p: Page) => {
+    if (mode === 'solo' && match && !confirm('Leave the current match?')) return;
+    if (mode === 'solo') leaveSolo();
+    if (inRoom) net.leaveRoom();
+    setPage(p);
+  };
+
   return (
-    <button type="button" onClick={onClick} className={cls}>
-      {children}
-    </button>
+    <div className={`app view-${view}`}>
+      <nav className="topbar">
+        <button type="button" className="brand" onClick={() => nav('home')}>
+          <svg viewBox="0 0 64 64" aria-hidden>
+            <rect x="13" y="7" width="42" height="54" rx="8" fill="#17603d" />
+            <rect x="9" y="3" width="42" height="54" rx="8" fill="#fbf7ec" stroke="#c9bd9c" strokeWidth="1.5" />
+            <rect x="17.5" y="20" width="25" height="17" rx="2.5" fill="none" stroke="#c8202f" strokeWidth="5" />
+            <rect x="27.5" y="9.5" width="5" height="39" rx="2" fill="#c8202f" />
+          </svg>
+          <span className="cjk">麻雀</span>
+          <span className="en">Mahjong</span>
+        </button>
+        <span className="spacer" />
+        {inRoom && <span className="room-chip">Room {net.code}</span>}
+        <button type="button" className={`nav ${view === 'home' ? 'on' : ''}`} onClick={() => nav('home')}>
+          Play
+        </button>
+        <button type="button" className={`nav ${view === 'train' ? 'on' : ''}`} onClick={() => nav('train')}>
+          Train
+        </button>
+        <button type="button" className={`nav ${view === 'rules' ? 'on' : ''}`} onClick={() => nav('rules')}>
+          Rules
+        </button>
+      </nav>
+      <main>
+        {view === 'table' && <Table />}
+        {view === 'lobby' && <Lobby />}
+        {view === 'home' && <Home go={setPage} />}
+        {view === 'train' && <Training />}
+        {view === 'rules' && <RulesPage back={() => setPage('home')} />}
+      </main>
+    </div>
   );
 }

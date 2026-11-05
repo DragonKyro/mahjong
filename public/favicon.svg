@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Tile back, offset so the tile reads as a block standing on the table. -->
+  <rect x="13" y="7" width="42" height="54" rx="8" fill="#17603d"/>
+  <rect x="11" y="5" width="42" height="54" rx="8" fill="#e9dfc4"/>
+  <rect x="9" y="3" width="42" height="54" rx="8" fill="#fbf7ec" stroke="#c9bd9c" stroke-width="1.5"/>
+  <!-- 紅中 (red dragon), drawn as shapes so it doesn't depend on a CJK font. -->
+  <rect x="17.5" y="20" width="25" height="17" rx="2.5" fill="none" stroke="#c8202f" stroke-width="5"/>
+  <rect x="27.5" y="9.5" width="5" height="39" rx="2" fill="#c8202f"/>
+</svg>

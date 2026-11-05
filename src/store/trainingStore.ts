@@ -1,86 +1,75 @@
 import { create } from 'zustand';
-import type { Tile } from '@core/tiles/Tile';
-import { PuzzleGenerator, type Puzzle } from '@training/PuzzleGenerator';
+import { freshSeed } from '@/core/rng';
+import { judge, makePuzzle, type Puzzle, type PuzzleLevel } from '@/core/training';
+import type { Kind } from '@/core/tiles';
 
-const PROGRESS_KEY = 'mahjong.training.progress.v1';
-
-export interface TrainingProgress {
-  total: number;
-  correct: number;
-  currentStreak: number;
+interface Progress {
+  played: number;
+  best: number;
+  streak: number;
   bestStreak: number;
 }
 
-function loadProgress(): TrainingProgress {
-  if (typeof localStorage === 'undefined') {
-    return { total: 0, correct: 0, currentStreak: 0, bestStreak: 0 };
-  }
-  try {
-    const raw = localStorage.getItem(PROGRESS_KEY);
-    if (!raw) return { total: 0, correct: 0, currentStreak: 0, bestStreak: 0 };
-    const parsed = JSON.parse(raw) as Partial<TrainingProgress>;
-    return {
-      total: parsed.total ?? 0,
-      correct: parsed.correct ?? 0,
-      currentStreak: parsed.currentStreak ?? 0,
-      bestStreak: parsed.bestStreak ?? 0,
-    };
-  } catch {
-    return { total: 0, correct: 0, currentStreak: 0, bestStreak: 0 };
-  }
-}
-
-function saveProgress(p: TrainingProgress): void {
-  if (typeof localStorage === 'undefined') return;
-  try {
-    localStorage.setItem(PROGRESS_KEY, JSON.stringify(p));
-  } catch {
-    // Quota exceeded / private mode — silently ignore.
-  }
-}
-
 interface TrainingStore {
-  puzzle: Puzzle | null;
-  /** The tile the user picked, or null if they haven't picked yet. */
-  guess: Tile | null;
-  /** True once the user has picked — reveals the analysis. */
-  revealed: boolean;
-  progress: TrainingProgress;
-
-  newPuzzle: () => void;
-  submitGuess: (tile: Tile) => void;
-  resetProgress: () => void;
+  level: PuzzleLevel;
+  puzzle: Puzzle;
+  guess: Kind | null;
+  progress: Progress;
+  setLevel: (level: PuzzleLevel) => void;
+  answer: (kind: Kind) => void;
+  next: () => void;
+  reset: () => void;
 }
 
-export const useTrainingStore = create<TrainingStore>((set, get) => ({
-  puzzle: null,
+const KEY = 'mahjong.training.v2';
+const EMPTY: Progress = { played: 0, best: 0, streak: 0, bestStreak: 0 };
+
+function load(): { level: PuzzleLevel; progress: Progress } {
+  try {
+    const v = JSON.parse(localStorage.getItem(KEY) ?? 'null') as { level?: PuzzleLevel; progress?: Progress } | null;
+    return { level: v?.level ?? 'mid', progress: { ...EMPTY, ...v?.progress } };
+  } catch {
+    return { level: 'mid', progress: EMPTY };
+  }
+}
+
+function save(level: PuzzleLevel, progress: Progress): void {
+  try {
+    localStorage.setItem(KEY, JSON.stringify({ level, progress }));
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+const initial = load();
+
+export const useTraining = create<TrainingStore>((set, get) => ({
+  level: initial.level,
+  puzzle: makePuzzle(freshSeed(), initial.level),
   guess: null,
-  revealed: false,
-  progress: loadProgress(),
-
-  newPuzzle: () => {
-    set({ puzzle: PuzzleGenerator.generate(), guess: null, revealed: false });
+  progress: initial.progress,
+  setLevel: (level) => {
+    save(level, get().progress);
+    set({ level, puzzle: makePuzzle(freshSeed(), level), guess: null });
   },
-
-  submitGuess: (tile) => {
-    const puzzle = get().puzzle;
-    if (!puzzle || get().revealed) return;
-    const correct = puzzle.optimal.discard.equals(tile);
-    const prev = get().progress;
-    const nextStreak = correct ? prev.currentStreak + 1 : 0;
-    const progress: TrainingProgress = {
-      total: prev.total + 1,
-      correct: prev.correct + (correct ? 1 : 0),
-      currentStreak: nextStreak,
-      bestStreak: Math.max(prev.bestStreak, nextStreak),
+  answer: (kind) => {
+    const { guess, puzzle, progress, level } = get();
+    if (guess !== null) return;
+    const { verdict } = judge(puzzle, kind);
+    const ok = verdict === 'best';
+    const streak = ok ? progress.streak + 1 : 0;
+    const next: Progress = {
+      played: progress.played + 1,
+      best: progress.best + (ok ? 1 : 0),
+      streak,
+      bestStreak: Math.max(progress.bestStreak, streak),
     };
-    saveProgress(progress);
-    set({ guess: tile, revealed: true, progress });
+    save(level, next);
+    set({ guess: kind, progress: next });
   },
-
-  resetProgress: () => {
-    const blank: TrainingProgress = { total: 0, correct: 0, currentStreak: 0, bestStreak: 0 };
-    saveProgress(blank);
-    set({ progress: blank });
+  next: () => set({ puzzle: makePuzzle(freshSeed(), get().level), guess: null }),
+  reset: () => {
+    save(get().level, EMPTY);
+    set({ progress: EMPTY });
   },
 }));

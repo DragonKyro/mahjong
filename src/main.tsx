@@ -1,12 +1,16 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { App } from '@ui/App';
-import './index.css';
+import { App } from './ui/App';
+import { runDemo } from './ui/devDemo';
+import './ui/styles.css';
 
-const rootEl = document.getElementById('root');
-if (!rootEl) throw new Error('Missing #root element in index.html');
+// Dev only (tree-shaken from builds): ?demo=… fast-forwards a solo match.
+if (import.meta.env.DEV) {
+  const params = new URLSearchParams(window.location.search);
+  if (params.has('demo')) runDemo(params);
+}
 
-createRoot(rootEl).render(
+createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App />
   </StrictMode>,

@@ -1,47 +1,30 @@
 # Dependencies
 node_modules/
-.pnp
-.pnp.js
 
 # Build output
 dist/
-dist-ssr/
-build/
-*.local
-
-# Vite
-.vite/
-
-# TypeScript incremental build state
 *.tsbuildinfo
-
-# Testing
+.vite/
 coverage/
-*.lcov
-.nyc_output/
+
+# Firebase CLI state and the merged rules file scripts/merge-db-rules.mjs writes
+.firebase/
+firebase-debug.log
+database-debug.log
 
 # Logs
-logs/
 *.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
 
 # Environment
 .env
 .env.local
 .env.*.local
 
-# Editor / IDE
+# Editor / OS
 .vscode/*
 !.vscode/extensions.json
-!.vscode/settings.json
 .idea/
 *.swp
-*.swo
-
-# OS
 .DS_Store
 Thumbs.db
 desktop.ini
