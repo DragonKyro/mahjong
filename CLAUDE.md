@@ -74,6 +74,7 @@ npm run typecheck    # tsc
 npm run build        # tsc && vite build
 npm run fix-lock     # rewrite mirror URLs in package-lock.json to registry.npmjs.org
 npm run deploy:rules # merge + deploy database.rules.json
+FIREBASE_LIVE=1 npx vitest run src/net/firebase.live.test.ts   # rooms + rules against the real database (prints the room code; remove it after)
 ```
 
 **Lockfile:** Kyle's npm uses a corporate Artifactory mirror; registry.npmjs.org is blocked locally. After any install that changes the lockfile, run `npm run fix-lock` (the URLs must be public or CI's `npm ci` fails). Locally npm maps the public URLs back to the mirror.

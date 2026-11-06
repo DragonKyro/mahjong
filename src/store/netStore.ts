@@ -106,6 +106,8 @@ export const useNet = create<NetStore>((set, get) => {
     sync = null;
     watching = lobby.match;
     if (lobby.match === null || !room) return publish();
+    // Every device notes the start itself (system lines aren't sent).
+    if (lastPeople.size > 0) system('The match has started.');
     const s = new MatchSync(room, lobby.match, publish, (text) => {
       useGame.getState().setNotice(text);
       system(text);
@@ -310,10 +312,7 @@ export const useNet = create<NetStore>((set, get) => {
       };
       const record = { config, hostUuid: uuid, startedAt: Date.now(), check: checksum(createMatch(config)) };
       const next = await edit((l) => (l.match !== null ? null : { ...l, match: l.matchCount, matchCount: l.matchCount + 1 }));
-      if (next?.match != null) {
-        await room.startMatch(next.match, record);
-        system('The match has started.');
-      }
+      if (next?.match != null) await room.startMatch(next.match, record);
     },
 
     backToLobby: async () => {

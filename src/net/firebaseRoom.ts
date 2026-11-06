@@ -27,6 +27,7 @@ import {
   getAuth,
   indexedDBLocalPersistence,
   initializeAuth,
+  inMemoryPersistence,
   signInAnonymously,
   type Auth,
 } from 'firebase/auth';
@@ -144,7 +145,14 @@ const isPermissionDenied = (e: unknown) => /permission.denied/i.test(errorText(e
 const unreachable = (e: unknown) =>
   e instanceof ServerUnreachableError ? e : new ServerUnreachableError(`Could not reach the game server (${errorText(e).trim()}).`);
 
-export function createFirebaseTransport(): RoomTransport {
+export interface TransportOptions {
+  /** A separate Firebase app, so tests can run several "devices" in one process. */
+  appName?: string;
+  /** Keep the anonymous sign-in in memory (Node / tests). */
+  memory?: boolean;
+}
+
+export function createFirebaseTransport(opts: TransportOptions = {}): RoomTransport {
   let client: { app: FirebaseApp; auth: Auth; db: Database } | null = null;
   let signIn: Promise<string> | null = null;
   let openRooms = 0;
@@ -152,11 +160,16 @@ export function createFirebaseTransport(): RoomTransport {
 
   function firebase() {
     if (client) return client;
-    const app = getApps()[0] ?? initializeApp(FIREBASE_CONFIG);
+    const name = opts.appName ?? '[DEFAULT]';
+    const app = getApps().find((a) => a.name === name) ?? initializeApp(FIREBASE_CONFIG, name);
     let auth: Auth;
     try {
       auth = initializeAuth(app, {
-        persistence: freshTabMode() ? browserSessionPersistence : [indexedDBLocalPersistence, browserLocalPersistence],
+        persistence: opts.memory
+          ? inMemoryPersistence
+          : freshTabMode()
+            ? browserSessionPersistence
+            : [indexedDBLocalPersistence, browserLocalPersistence],
       });
     } catch {
       auth = getAuth(app); // already initialised (hot reload)
