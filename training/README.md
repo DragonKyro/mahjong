@@ -22,6 +22,8 @@ Outputs go to `training/runs/<name>/`:
 
 | File | What |
 |---|---|
+| `progress.md` | The readable report, rewritten every 100 updates and after each evaluation: position and ETA, results against the heuristic and against the update-100 imitation snapshot, training stats per 100 updates |
+| `train.log` | The console, one line per update (when run as `... > train.log 2>&1`) |
 | `metrics.jsonl` | One line per update: losses, entropy, KL, clip fraction, explained variance, win / deal-in rates, timings |
 | `evals.jsonl` | The periodic evaluations |
 | `policies/update_NNNNN.hknet`, `latest.hknet` | Compact networks the TS runtime loads (`loadHkNet`) |
@@ -59,8 +61,10 @@ The network only ever sees what its seat could see at a real table.
      - clip 0.2, early stop past 1.5 × the 0.03 KL target, Huber value loss;
      - entropy bonus 0.01 → 0.002, Adam 3e-4 with cosine decay to 3e-5, grad clip 1.0, aux weight 0.1.
 3. **Evaluation (measurement only; it never feeds training).**
-   - Every 250 updates: 64 paired-seed matches (each seed twice, seats swapped) against the heuristic AI, and against the update-100 imitation snapshot. The second measures how far self-play has moved past the starting point.
+   - Every 100 updates: 64 paired-seed matches (each seed twice, seats swapped) against the heuristic AI, and against the update-100 imitation snapshot. The second measures how far self-play has moved past the starting point.
    - The network plays greedily. Reported: points per match, wins, deal-ins, average winning faan.
+   - The update-100 snapshot is also played against the heuristic once, to give the imitation baseline.
+   - On `--resume`, the restored network is evaluated right away.
 
 ## Speed
 

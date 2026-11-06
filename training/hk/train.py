@@ -74,7 +74,8 @@ def parse_args(argv=None):
     p.add_argument("--pool-frac", type=float, default=0.25, help="share of workers playing past snapshots (2 seats each)")
     p.add_argument("--pool-every", type=int, default=20)
     p.add_argument("--pool-size", type=int, default=20)
-    p.add_argument("--eval-every", type=int, default=250, help="0 = never (evaluation is measurement only)")
+    p.add_argument("--eval-every", type=int, default=100, help="0 = never (evaluation is measurement only)")
+    p.add_argument("--progress-every", type=int, default=100, help="rewrite progress.md this often (and after each evaluation)")
     p.add_argument("--eval-matches", type=int, default=64)
     p.add_argument("--export-every", type=int, default=100)
     p.add_argument("--ckpt-every", type=int, default=50)
@@ -684,7 +685,9 @@ class Trainer:
 
     # ---- evaluation (measurement only; never a training signal)
     def start_eval(self, kind: str) -> None:
-        if kind == "bc" and self.bc_state is None:
+        """'heuristic': the current network vs the heuristic AI; 'bc': vs the update-100 imitation
+        snapshot; 'bc_heuristic': that snapshot vs the heuristic (the starting point, run once)."""
+        if kind in ("bc", "bc_heuristic") and self.bc_state is None:
             return
         if any(e["kind"] == kind for e in self.evals):
             return  # the previous one is still playing
@@ -693,14 +696,16 @@ class Trainer:
         if kind not in self.eval_nets:
             self.eval_nets[kind] = (Inference(self.cfg, self.device, self.prec.store), Inference(self.cfg, self.device, self.prec.store) if kind == "bc" else None)
         w.net, w.opponent = self.eval_nets[kind]
-        w.net.load(self.model.state_dict())
+        w.net.load(self.bc_state if kind == "bc_heuristic" else self.model.state_dict())
         if w.opponent is not None:
             w.opponent.load(self.bc_state)
-        seats = [LEARNER, "normal" if kind == "heuristic" else BC_OPP] * 2
+        seats = [LEARNER, BC_OPP if kind == "bc" else "normal"] * 2
         n = self.args.eval_matches
         # maxActions: two weak players can draw hand after hand (the dealer keeps the deal on a draw).
         w.reset(numEnvs=min(n, 32), seed=777, seats=seats, schedule="paired", maxMatches=n, rewardScale=1, aux=False, maxActions=4000)
-        self.evals.append({"worker": w, "kind": kind, "update": self.trained, "episodes": [], "t0": time.time()})
+        update = self.args.bc_updates if kind == "bc_heuristic" else self.trained
+        vs = "bc" if kind == "bc" else "heuristic"
+        self.evals.append({"worker": w, "kind": kind, "vs": vs, "update": update, "episodes": [], "t0": time.time()})
 
     def _service_evals(self) -> None:
         for e in self.evals:
@@ -752,7 +757,7 @@ class Trainer:
         n = max(1, len(eps))
         rec = {
             "update": e["update"],
-            "vs": e["kind"],
+            "vs": e["vs"],
             "matches": len(eps),
             "points_per_match": (A - B) / n,
             "wins": wins,
@@ -764,8 +769,115 @@ class Trainer:
         }
         with open(os.path.join(self.run_dir, "evals.jsonl"), "a") as f:
             f.write(json.dumps(rec) + "\n")
+        self.write_progress()
         print(f"  eval @{rec['update']} vs {rec['vs']}: {rec['points_per_match']:+.1f} points / match | wins {wins[0]}-{wins[1]} | deal-ins {deal_ins[0]}-{deal_ins[1]}")
         e["worker"].close()
+
+    # ---- progress.md (rebuilt from metrics.jsonl and evals.jsonl, so it survives resumes)
+    def write_progress(self) -> None:
+        a = self.args
+
+        def read(name):
+            path = os.path.join(self.run_dir, name)
+            if not os.path.exists(path):
+                return []
+            with open(path, encoding="utf-8") as f:
+                return [json.loads(l) for l in f if l.strip()]
+
+        metrics, evals = read("metrics.jsonl"), read("evals.jsonl")
+        # A resume repeats the updates after its checkpoint: keep the latest line of each.
+        metrics = sorted({m["update"]: m for m in metrics}.values(), key=lambda m: m["update"])
+        evals = list({(e["update"], e["vs"]): e for e in evals}.values())
+        if not metrics:
+            return
+        last = metrics[-1]["update"]
+        walls = sorted(m["wall_s"] for m in metrics[-100:] if m.get("wall_s"))
+        per = walls[len(walls) // 2] if walls else 0.0
+        elapsed = sum(m.get("wall_s", 0) for m in metrics)
+        phase = "imitation" if metrics[-1]["phase"] == "bc" else "self-play"
+        out = [
+            f"# HK training: {os.path.basename(self.run_dir)}",
+            "",
+            f"Updated {time.strftime('%Y-%m-%d %H:%M')} · **update {last:,} / {a.updates:,}** ({100 * last / a.updates:.0f}%) · {phase} · "
+            f"{elapsed / 3600:.1f} h so far · ~{per:.1f} s / update · **ETA {per * (a.updates - last) / 3600:.1f} h**",
+            "",
+            f"Updates 1–{a.bc_updates} imitate the heuristic AI; after that the network trains only against itself and its own past snapshots. "
+            "The evaluations below are measurement only — they never feed training.",
+            "",
+        ]
+        heur = sorted((e for e in evals if e["vs"] == "heuristic"), key=lambda e: e["update"])
+        if heur:
+            e = max(heur, key=lambda e: e["update"])
+            verdict = "ahead of" if e["points_per_match"] > 0 else "behind"
+            out += [f"**Latest vs the heuristic AI (update {e['update']}): {e['points_per_match']:+.1f} points per match — {verdict} it.**", ""]
+
+        def eval_table(rows, opp):
+            t = [
+                f"| update | points / match | net wins % | {opp} wins % | net deal-ins % | {opp} deal-ins % | net avg faan | matches |",
+                "|---:|---:|---:|---:|---:|---:|---:|---:|",
+            ]
+            for e in rows:
+                h = max(1, e["hands"])
+                t.append(
+                    f"| {e['update']} | {e['points_per_match']:+.1f} | {100 * e['wins'][0] / h:.1f} | {100 * e['wins'][1] / h:.1f} | "
+                    f"{100 * e['deal_ins'][0] / h:.1f} | {100 * e['deal_ins'][1] / h:.1f} | {e['avg_win_faan']:.1f} | {e['matches']} |"
+                )
+            return t
+
+        n_eval = a.eval_matches
+        out += [
+            "## Against the heuristic AI (normal)",
+            "",
+            f"{n_eval} paired-seed matches each (every deal played twice with the seats swapped), the network playing greedily in two seats. "
+            "Points per match = network seats minus heuristic seats; win and deal-in rates are per hand, summed over both seats of a side.",
+            "",
+        ]
+        out += eval_table(heur, "heur") if heur else ["_No evaluation finished yet._"]
+        bc = sorted((e for e in evals if e["vs"] == "bc"), key=lambda e: e["update"])
+        out += ["", f"## Against its own imitation snapshot (update {a.bc_updates})", "", "How far self-play has moved from where imitation left it.", ""]
+        out += eval_table(bc, "snap") if bc else ["_No evaluation finished yet._"]
+
+        out += [
+            "",
+            "## Training, per 100 updates",
+            "",
+            "| updates | phase | imitation acc | entropy | KL | clip frac | value expl. var | win % | deal-in % | avg win faan | s / update |",
+            "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+
+        def mean(rows, k):
+            v = [r[k] for r in rows if isinstance(r.get(k), (int, float))]
+            return sum(v) / len(v) if v else None
+
+        def fmt(x, f="{:.3f}", scale=1.0):
+            return "–" if x is None else f.format(x * scale)
+
+        for start in range(1, last + 1, 100):
+            rows = [m for m in metrics if start <= m["update"] < start + 100]
+            if not rows:
+                continue
+            ph = "imitation" if rows[-1]["phase"] == "bc" else "self-play"
+            out.append(
+                f"| {start}–{rows[-1]['update']} | {ph} | {fmt(mean(rows, 'bc_acc_fresh'))} | {fmt(mean(rows, 'entropy'), '{:.2f}')} | "
+                f"{fmt(mean(rows, 'kl'))} | {fmt(mean(rows, 'clipfrac'), '{:.2f}')} | {fmt(mean(rows, 'explained_var'), '{:.2f}')} | "
+                f"{fmt(mean(rows, 'win_rate'), '{:.1f}', 100)} | {fmt(mean(rows, 'deal_in_rate'), '{:.1f}', 100)} | "
+                f"{fmt(mean(rows, 'avg_win_faan'), '{:.2f}')} | {fmt(mean(rows, 'wall_s'), '{:.1f}')} |"
+            )
+        exports = [m["export"] for m in metrics if m.get("export")]
+        if exports:
+            x = exports[-1]
+            agree = f", int8 file plays the same move as the float network {100 * x['int8_agreement']:.1f}% of the time" if "int8_agreement" in x else ""
+            out += ["", f"Latest policy file: `policies/{x['file']}` ({x['bytes'] / 1e6:.2f} MB{agree})."]
+        out += [
+            "",
+            "Training win / deal-in rates are the network's own seats in its training matches (mostly against itself), so they "
+            "describe its style more than its strength; the evaluation tables measure strength.",
+            "",
+        ]
+        path = os.path.join(self.run_dir, "progress.md")
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            f.write("\n".join(out))
+        os.replace(path + ".tmp", path)
 
     # ---- the loop
     def run(self) -> None:
@@ -775,6 +887,14 @@ class Trainer:
         # (Resumed right at the switch: finish the hand-over at the next update.)
         bc = self.update < a.bc_updates or (a.bc_updates > 0 and self.bc_state is None)
         self.start_phase("bc" if bc else "ppo")
+        if self.phase == "ppo" and a.eval_every:
+            done = os.path.join(self.run_dir, "evals.jsonl")
+            seen = [json.loads(l) for l in open(done, encoding="utf-8")] if os.path.exists(done) else []
+            if not any(e["vs"] == "heuristic" and e["update"] == a.bc_updates for e in seen):
+                self.start_eval("bc_heuristic")
+            if self.update > a.bc_updates and not any(e["update"] == self.update for e in seen):
+                self.start_eval("heuristic")
+                self.start_eval("bc")
         while self.update < a.updates:
             self.update += 1
             if self.update == a.bc_updates + 1 and self.phase == "bc":
@@ -847,7 +967,8 @@ class Trainer:
             self.pool = self.pool[-a.pool_size :]
         if a.eval_every and (u % a.eval_every == 0 or u == a.updates):
             self.start_eval("heuristic")
-            self.start_eval("bc")
+            if u > a.bc_updates:
+                self.start_eval("bc")
         if u % a.export_every == 0 or u == a.updates:
             probe = torch.from_numpy(np.flatnonzero(job.buf.complete[: job.buf.n])[:2048]).to(self.device)
             rec["export"] = self.export(f"update_{u:05d}", job.buf.obs[probe], job.buf.mask[probe])
@@ -856,6 +977,8 @@ class Trainer:
             self._save()
         with open(os.path.join(self.run_dir, "metrics.jsonl"), "a") as f:
             f.write(json.dumps(rec) + "\n")
+        if u % a.progress_every == 0 or u == a.updates:
+            self.write_progress()
         done = max(1, u - self.start_update)
         eta = (time.time() - self.t_start) / done * (a.updates - u)
         line = f"[{u:5d} {job.phase:3}] {logs['samples']:6d} dec | collect {rec['collect_s']:4.1f}s (env wait {rec['wait_s']:.1f}) train {job.seconds:4.1f}s"
