@@ -6,18 +6,20 @@ Mahjong in the browser, hosted on GitHub Pages: **https://dragonkyro.github.io/m
 - **Play with friends** — online rooms with a 4-letter code or an invite link. Empty seats can be filled with computer players. Rooms live in a Firebase Realtime Database; no accounts.
 - **Train** — a discard trainer: pick the tile that keeps a 14-tile hand closest to winning, then see every discard ranked by shanten and useful tiles.
 
-The table looks and plays like a real one: a pinwheel wall of 18 stacks a side that shrinks as tiles are drawn, each player's discards in rows of six in front of them, opponents' hands and melds facing their own seats, a compass with the round wind, seat winds and the dealer, and claim callouts (碰 / 上 / 槓 / 食糊).
+Four rule sets: **Hong Kong Old Style, Taiwanese 16-tile, Japanese Riichi and American**.
+
+The table looks and plays like a real one: a pinwheel wall that shrinks as tiles are drawn (with the dora indicator face up in Riichi's dead wall), each player's discards in rows in front of them (a riichi tile lies sideways), opponents' hands and melds facing their own seats, a compass with the round wind, seat winds, the dealer and riichi sticks, claim callouts, and tiles that fly from the wall to the hand, into the pond and onto melds.
 
 ## Variants
 
-The engine is a framework for several rule sets ([src/core/variants/](src/core/variants/)). A variant supplies its tile set, hand size, reserved tiles, claim rules, scoring and settlement; the shared engine runs the wall, deal, draw / discard / claim loop, kongs, bonus tiles, robbing a kong and dealer rotation.
+The engine is a framework for several rule sets ([src/core/variants/](src/core/variants/)). A variant supplies its tile set, hand size, reserved tiles, feature flags, scoring, settlement, draw payments, dealer rotation and match end; the shared engine runs the wall, deal, draw / discard / claim loop, kongs, bonus tiles, robbing a kong, and the flagged mechanics (riichi / furiten / dora, the Charleston and jokers).
 
-| Variant | Status |
+| Variant | Highlights |
 |---|---|
-| 香港舊章 Hong Kong Old Style | **Playable** — full rules, below |
-| 台灣十六張 Taiwanese 16-tile | Planned — needs the tai table, dealer-streak bonus, Taiwan-only hands |
-| 日本麻雀 Japanese Riichi | Planned — needs riichi / furiten, dora and the dead wall, yaku + fu scoring |
-| 美式麻將 American | Planned — needs the Charleston, jokers, and a hand-card pattern matcher (the yearly NMJL card is a published product, so the app would ship its own card or load one) |
+| 香港舊章 Hong Kong Old Style | 13 tiles, flowers, 3-faan minimum, half-spicy payouts, 包 liability |
+| 台灣十六張 Taiwanese 16-tile | 16 tiles (five sets + a pair), 底 + 台 payments, dealer and 連莊 tai, 16 tiles left in the wall, no minimum |
+| 日本麻雀 Japanese Riichi | red fives and dora, yaku required, han + fu, riichi / ippatsu / furiten, honba, noten payments, abortive draws |
+| 美式麻將 American | 8 jokers, the Charleston, hands from a card, joker exchange, jokerless doubling |
 
 ## Hong Kong Old Style rules
 
@@ -36,6 +38,18 @@ The engine is a framework for several rule sets ([src/core/variants/](src/core/v
 
 Every value above is a house rule in `HkRules` and can be changed from the setup screen or the online lobby.
 
+## Taiwanese 16-tile rules
+
+16 tiles (the dealer 17), five sets and a pair; chow from the left only; the last 16 tiles stay in the wall. Any complete hand wins: every payment is 底 (base, default 30) + 台 (default 10) × tai; only the discarder pays on a discard, all three on a self-draw. Payments between the dealer and anyone add 莊家 1 tai + 2 per hand kept (連莊拉莊). Tai: 門清 1, 自摸 1, 門清自摸 3, 獨聽 1, 全求人 2, 平胡 2, seat flower 1, 花槓 2, dragon / seat / round wind pongs 1, 三/四/五暗刻 2/5/8, 碰碰胡 4, 混一色 4, 清一色 8, 字一色 16, 小三元 4, 大三元 8, 小四喜 8, 大四喜 16, 嚦咕嚦咕 8, 天胡 / 地胡 16, 人胡 8, 七搶一 / 八仙過海 8, plus 搶槓 / 槓上開花 / 海底 / 河底 1. House tables vary, so all of it is editable.
+
+## Japanese Riichi rules
+
+Modern standard rules (Tenhou / Mahjong Soul defaults): 136 tiles with three red fives, a 14-tile dead wall with dora (and kan dora, ura dora for riichi), every win needs a yaku (the full list, yakuman included), han + fu with mangan / haneman / baiman / sanbaiman / kazoe yakuman, riichi (1,000 on the table, then tsumogiri), ippatsu, double riichi, furiten (own discards, passed tiles, riichi), kuikae, chankan (kokushi may rob a concealed kong), double ron (triple = abortive), honba (+300), noten payments (3,000 split), nagashi mangan, pao for daisangen / daisuushii, abortive draws (九種九牌, 四風連打, 四家立直, 四槓散了), dealer repeats on a win or when ready at a draw, a bust ends the game. East game by default (East–South selectable).
+
+## American rules
+
+152 tiles with 8 jokers; the Charleston (right, across, left; a second one if everyone agrees; a courtesy trade across); no chows; a discard can be called only for an exposure that fits a card hand, or for Mah Jongg; jokers fill groups of three or more (never pairs or singles) and can be bought back from exposures; discarder pays double, the others single, self-drawn double from all; jokerless hands double; wall games pay nothing. The official card is a yearly National Mah Jongg League publication, so the app plays its own **House Card 2026** in the same notation — 34 hands across 2468, 13579, consecutive runs, like numbers, winds & dragons, 369, the year, quints, and singles & pairs. The card is plain data in [src/core/variants/american.ts](src/core/variants/american.ts).
+
 ## Running locally
 
 ```bash
@@ -46,7 +60,7 @@ npm run typecheck
 npm run build        # → dist/
 ```
 
-`VITE_BASE=/ npm run dev` serves from `/` instead of `/mahjong/`. In dev, `?demo=40`, `?demo=claim`, `?demo=end`, `?demo=over` and `?demo=lobby` jump to a given moment of a match (and `?page=train` / `?page=rules` work in any build).
+`VITE_BASE=/ npm run dev` serves from `/` instead of `/mahjong/`. In dev, `?demo=40|claim|end|over|riichi|charleston|lobby` (with `&variant=hk|taiwan|riichi|american`) jumps to a given moment of a match; `?page=train` / `?page=rules` work in any build.
 
 **Lockfile.** The lockfile must point at `registry.npmjs.org` or the GitHub Actions build can't install. If your npm is configured with a private mirror, run `npm run fix-lock` after any install that changes `package-lock.json`; it rewrites the mirror URLs (the tarballs and integrity hashes are identical). npm still installs through your mirror locally.
 
@@ -62,7 +76,7 @@ Pushing to `main` runs [.github/workflows/deploy.yml](.github/workflows/deploy.y
 
 ## Credits
 
-Suit, wind and 發 / 中 tile faces are from [FluffyStuff/riichi-mahjong-tiles](https://github.com/FluffyStuff/riichi-mahjong-tiles) (CC0, public domain). 白板 and the flowers and seasons are drawn in [src/ui/Tile.tsx](src/ui/Tile.tsx). Tile bodies and backs are CSS.
+Suit, wind, 發 / 中 and red-five tile faces are from [FluffyStuff/riichi-mahjong-tiles](https://github.com/FluffyStuff/riichi-mahjong-tiles) (CC0, public domain). 白板, the flowers and seasons and the joker are drawn in [src/ui/Tile.tsx](src/ui/Tile.tsx). Tile bodies and backs are CSS.
 
 ## Roadmap
 
@@ -70,7 +84,8 @@ Suit, wind and 發 / 中 tile faces are from [FluffyStuff/riichi-mahjong-tiles](
 - [x] Real-table UI (desktop, tablet, phone)
 - [x] Online rooms on Firebase (lobby, chat, rejoin, AI seats, spectators)
 - [x] Variant framework
-- [ ] Taiwanese 16-tile
-- [ ] Japanese Riichi
-- [ ] American
-- [ ] Optional: tile-move animations, sound, curated training shapes (兩面 / 嵌張 / 邊張)
+- [x] Taiwanese 16-tile
+- [x] Japanese Riichi
+- [x] American (with an original house card)
+- [x] Tile-move animations
+- [ ] Optional: sound, curated training shapes (兩面 / 嵌張 / 邊張), Riichi uma / oka, a loadable American card

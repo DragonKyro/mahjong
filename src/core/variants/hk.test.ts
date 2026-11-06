@@ -2,12 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { parseKinds } from '../tiles';
 import { DEFAULT_HK_RULES, evaluateHk, liabilityFor, settleHk, tablePoints, type HkRules } from './hk';
 import type { MeldFact, WinInput } from './index';
+import { blankWinInput } from '../engine';
 
 const R = DEFAULT_HK_RULES;
 const k = (text: string) => parseKinds(text)[0]!;
 
 function input(concealed: string, win: string, o: Partial<WinInput> = {}): WinInput {
-  return {
+  return blankWinInput({
     seat: 0,
     seatWind: 1, // South, so East pongs only count as the prevailing wind
     prevailing: 0,
@@ -15,19 +16,10 @@ function input(concealed: string, win: string, o: Partial<WinInput> = {}): WinIn
     concealed: parseKinds(concealed),
     winTile: k(win),
     melds: [],
-    bonus: [],
-    selfDraw: false,
     from: 1,
-    robbingKong: false,
-    lastTile: false,
-    kongReplacement: 0,
-    heavenly: false,
-    earthly: false,
-    flowerWin: null,
     wallLeft: 40,
-    discardUnseen: false,
     ...o,
-  };
+  });
 }
 
 const meld = (type: MeldFact['type'], kind: string, from: number | null = 2, order = 0): MeldFact => ({
@@ -36,6 +28,7 @@ const meld = (type: MeldFact['type'], kind: string, from: number | null = 2, ord
   concealed: from === null,
   from,
   order,
+  tiles: [],
 });
 
 const ids = (i: WinInput, rules: HkRules = R) => evaluateHk(i, rules)?.items.map((x) => x.id).sort();
@@ -125,7 +118,7 @@ describe('HK faan', () => {
     expect(evaluateHk(input(base, '5p', { selfDraw: true, from: null, kongReplacement: 2 }), R)!.value).toBe(10);
     expect(ids(input(base, '5p', { robbingKong: true }))).toContain('robbingKong');
     expect(ids(input(base, '5p', { lastTile: true }))).toContain('lastTile');
-    expect(evaluateHk(input(base, '5p', { heavenly: true, selfDraw: true, from: null }), R)!.limit).toBe(true);
+    expect(evaluateHk(input(base, '5p', { firstDraw: true, dealer: 0, selfDraw: true, from: null }), R)!.limit).toBe(true);
   });
 
   it('flower wins need no hand', () => {

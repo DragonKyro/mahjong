@@ -10,6 +10,7 @@
 // the same state; there is no server logic beyond the security rules.
 
 import type { AiLevel, MatchConfig } from '@/core/engine';
+import type { VariantId } from '@/core/variants';
 
 export type LobbySeat =
   | { kind: 'open' }
@@ -19,9 +20,9 @@ export type LobbySeat =
 export interface LobbyState {
   hostUuid: string;
   seats: LobbySeat[];
-  /** House rules (HkRules) as JSON. */
+  /** The variant's house rules as JSON. */
   rulesJson: string;
-  variant: 'hk';
+  variant: VariantId;
   /** The match being played (its slot under matches/), null while in the lobby. */
   match: number | null;
   /** Matches started so far = the next match's slot. */

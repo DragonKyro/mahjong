@@ -4,15 +4,16 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest';
 import { chooseAction } from '@/core/ai';
 import { applyAction, createMatch, pendingSeats, type MatchState } from '@/core/engine';
+import { defaultRulesFor, type VariantId } from '@/core/variants';
 import { DEFAULT_HK_RULES } from '@/core/variants/hk';
 import { useGame } from '@/store/gameStore';
 import { useNet } from '@/store/netStore';
 import { App } from './App';
 
-function matchUntil(done: (s: MatchState) => boolean, seed = 12345): MatchState {
+function matchUntil(done: (s: MatchState) => boolean, seed = 12345, variant: VariantId = 'hk'): MatchState {
   let s = createMatch({
-    variant: 'hk',
-    rules: DEFAULT_HK_RULES,
+    variant,
+    rules: defaultRulesFor(variant),
     seed,
     seats: [
       { name: 'You', ai: false },
@@ -36,8 +37,7 @@ afterEach(() => {
 describe('screens', () => {
   it('home lists the variants', () => {
     render(<App />);
-    expect(screen.getAllByText('Hong Kong Old Style').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('Coming soon')).toHaveLength(3);
+    for (const name of ['Hong Kong Old Style', 'Taiwanese 16-tile', 'Japanese Riichi', 'American']) expect(screen.getAllByText(name).length).toBeGreaterThan(0);
     expect(screen.getByRole('button', { name: 'Deal the tiles' })).toBeTruthy();
   });
 
@@ -60,7 +60,7 @@ describe('screens', () => {
           hostUuid: me,
           seats: [{ kind: 'human', uuid: me, name: 'Kyle' }, { kind: 'ai', level: 'hard', name: 'Chan' }, { kind: 'open' }, { kind: 'open' }],
           rulesJson: JSON.stringify(DEFAULT_HK_RULES),
-          variant: 'hk',
+          variant: 'riichi',
           match: null,
           matchCount: 0,
         },
@@ -106,5 +106,39 @@ describe('the table', () => {
     act(() => useGame.setState({ match: s, mode: 'solo', mySeat: 0, aiDriver: false }));
     render(<App />);
     expect(screen.getByText('Match over')).toBeTruthy();
+  });
+
+  it.each(['taiwan', 'riichi', 'american'] as const)('%s: a turn, a claim and a hand result render', (variant) => {
+    for (const done of [
+      (x: MatchState) => x.hand.phase === 'act' && x.hand.turn === 0 && x.seq > 30,
+      (x: MatchState) => x.hand.phase === 'claim' && x.hand.claim!.responses[0] === null && x.hand.claim!.options[0]!.length > 0,
+      (x: MatchState) => x.hand.phase === 'end',
+    ]) {
+      const s = matchUntil(done, 777, variant);
+      act(() => useGame.setState({ match: s, mode: 'solo', mySeat: 0, aiDriver: false }));
+      const { unmount } = render(<App />);
+      expect(document.querySelector('.board')).toBeTruthy();
+      unmount();
+    }
+  });
+
+  it('american: the Charleston asks for three tiles', () => {
+    const s = matchUntil((x) => x.hand.phase === 'charleston', 5, 'american');
+    act(() => useGame.setState({ match: s, mode: 'solo', mySeat: 0, aiDriver: false }));
+    render(<App />);
+    expect(screen.getByText(/pick 3 tiles to pass right/)).toBeTruthy();
+    const tiles = screen.getAllByTitle(/^Pass /).slice(0, 3);
+    tiles.forEach((t) => fireEvent.click(t));
+    fireEvent.click(screen.getByRole('button', { name: /Pass right/ }));
+    expect(useGame.getState().match!.hand.charleston!.picks[0]).toHaveLength(3);
+  });
+
+  it('rules page has a tab per variant', () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Rules' }));
+    fireEvent.click(screen.getByRole('button', { name: /Japanese Riichi/ }));
+    expect(screen.getAllByText('平和').length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole('button', { name: /American/ }));
+    expect(screen.getByText('House Card 2026')).toBeTruthy();
   });
 });

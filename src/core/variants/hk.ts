@@ -21,6 +21,7 @@ import {
   type Kind,
 } from '../tiles';
 import type { ScoreItem, Settlement, Variant, WinInput, WinScore } from './index';
+import type { MatchState } from '../engine';
 
 export type FaanId =
   | 'commonHand'
@@ -189,7 +190,9 @@ function finish(regular: ScoreItem[], limits: ScoreItem[], conditions: ScoreItem
   }
   items = items.filter((i) => i.value !== 0);
   const raw = items.reduce((s, i) => s + i.value, 0);
-  return { value: Math.min(raw, rules.maxFaan), raw, limit: limit || raw >= rules.maxFaan, items };
+  const value = Math.min(raw, rules.maxFaan);
+  const isLimit = limit || raw >= rules.maxFaan;
+  return { value, raw, limit: isLimit, items, summary: `${value} faan${isLimit ? ' · 爆棚 limit' : ''}` };
 }
 
 function bonusItems(input: WinInput, rules: HkRules): ScoreItem[] {
@@ -216,8 +219,8 @@ function conditionItems(input: WinInput, rules: HkRules, concealedByDefinition: 
 
 function situationalLimits(input: WinInput, rules: HkRules): ScoreItem[] {
   const out: ScoreItem[] = [];
-  if (input.heavenly) out.push(item('heavenly', rules));
-  if (input.earthly) out.push(item('earthly', rules));
+  if (input.firstDraw && input.seat === input.dealer) out.push(item('heavenly', rules));
+  if (input.dealersFirstDiscard && input.seat !== input.dealer) out.push(item('earthly', rules));
   return out;
 }
 
@@ -251,7 +254,7 @@ function isNineGates(counts: readonly number[]): boolean {
 
 function scoreStandard(input: WinInput, d: Decomposition, openSet: number | null, rules: HkRules): WinScore {
   const groups: Group[] = [
-    ...input.melds.map((m) => ({ type: m.type, kind: m.kind, concealed: m.concealed })),
+    ...input.melds.map((m) => ({ type: m.type === 'set' ? ('pong' as const) : m.type, kind: m.kind, concealed: m.concealed })),
     ...d.sets.map((s, i) => ({ type: s.type, kind: s.kind, concealed: i !== openSet })),
   ];
   const pongs = groups.filter((g) => g.type !== 'chi');
@@ -317,7 +320,8 @@ function better(a: WinScore, b: WinScore): boolean {
 export function evaluateHk(input: WinInput, rules: HkRules): WinScore | null {
   if (input.flowerWin) {
     const it = item(input.flowerWin === 'eight' ? 'eightFlowers' : 'sevenRobOne', rules);
-    return { value: Math.min(it.value, rules.maxFaan), raw: it.value, limit: input.flowerWin === 'eight', items: [it] };
+    const value = Math.min(it.value, rules.maxFaan);
+    return { value, raw: it.value, limit: input.flowerWin === 'eight', items: [it], summary: `${value} faan` };
   }
   const counts = countKinds(input.concealed);
   const sets = 4 - input.melds.length;
@@ -436,18 +440,24 @@ export const HK_VARIANT: Variant<HkRules> = {
   ],
   tiles: { bonus: 8, jokers: 0 },
   handSize: 13,
-  reserve: 0,
   unit: { zh: '番', en: 'faan' },
+  terms: { ron: '食糊', tsumo: '自摸', pong: '碰', kong: '槓', chi: '上', pass: '過' },
+  features: { bonus: 'setAside', chi: 'left', kongs: true, robKong: true, riichi: false, american: false },
   defaultRules: DEFAULT_HK_RULES,
-  claims: { chi: 'left', robKong: true },
+  normalizeRules: (r) => normalizeHkRules(r as Partial<HkRules> | undefined),
+  reserve: () => 0,
   shape: (r) => ({ sevenPairs: r.sevenPairs, thirteenOrphans: true }),
   evaluate: evaluateHk,
   canWin: (score, r) => isSpecialFlowerWin(score) || score.value >= r.minFaan,
   settle: settleHk,
-  dealerStays: (winners, dealer, r) => (winners.length === 0 ? r.dealerStaysOnDraw : winners.includes(dealer)),
-  rounds: (r) => r.rounds,
-  multiWin: (r) => r.multiWin,
+  afterHand: (s, result) => ({
+    dealerStays: result.wins.length === 0 ? (s.config.rules as HkRules).dealerStaysOnDraw : result.wins.some((w) => w.seat === s.dealer),
+    honba: 0,
+  }),
+  matchOver: (s: MatchState) => s.prevailing >= (s.config.rules as HkRules).rounds,
+  multiWin: (r) => (r.multiWin ? 'all' : 'head'),
   flowerWins: (r) => r.flowerHands,
   robConcealedKong: (r) => r.robConcealedKong,
   startingScore: (r) => r.startingScore,
+  minimum: (r) => r.minFaan,
 };

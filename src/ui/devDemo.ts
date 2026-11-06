@@ -4,10 +4,12 @@
 //   ?demo=claim  until you're offered a claim
 //   ?demo=end    until the first hand ends
 //   ?demo=over   until the match is over
-//   &seed=N      a fixed deal; &view=W, &wide for layout checks
+//   ?demo=charleston  (American) at the Charleston
+//   &variant=hk|taiwan|riichi|american, &seed=N for a fixed deal
 
 import { chooseAction } from '@/core/ai';
 import { applyAction, createMatch, pendingSeats, type MatchState } from '@/core/engine';
+import { defaultRulesFor, type VariantId } from '@/core/variants';
 import { DEFAULT_HK_RULES } from '@/core/variants/hk';
 import { useGame } from '@/store/gameStore';
 import { useNet } from '@/store/netStore';
@@ -44,9 +46,10 @@ export function runDemo(params: URLSearchParams): void {
     return;
   }
   const seed = Number(params.get('seed') ?? 12345);
+  const variant = (params.get('variant') ?? 'hk') as VariantId;
   let s: MatchState = createMatch({
-    variant: 'hk',
-    rules: DEFAULT_HK_RULES,
+    variant,
+    rules: variant === 'hk' ? DEFAULT_HK_RULES : defaultRulesFor(variant),
     seed,
     seats: [
       { name: 'You', ai: false },
@@ -58,6 +61,8 @@ export function runDemo(params: URLSearchParams): void {
   const steps = Number(mode);
   const done = (x: MatchState, n: number): boolean => {
     if (mode === 'claim') return x.hand.phase === 'claim' && x.hand.claim!.responses[0] === null && x.hand.claim!.options[0]!.length > 0;
+    if (mode === 'charleston') return x.hand.phase === 'charleston' && pendingSeats(x).includes(0);
+    if (mode === 'riichi') return x.hand.riichi.some((r) => r?.paid) && x.hand.phase === 'act' && x.hand.turn === 0;
     if (mode === 'end') return x.hand.phase === 'end';
     if (mode === 'over') return x.over;
     return n >= steps && pendingSeats(x).includes(0) && x.hand.phase === 'act';

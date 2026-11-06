@@ -12,7 +12,7 @@
 import { create } from 'zustand';
 import { checksum, createMatch, type Action, type AiLevel, type MatchConfig } from '@/core/engine';
 import { freshSeed } from '@/core/rng';
-import { DEFAULT_HK_RULES, normalizeHkRules, type HkRules } from '@/core/variants/hk';
+import { defaultRulesFor, normalizeRulesFor, type AnyRules, type VariantId } from '@/core/variants';
 import {
   generateRoomCode,
   getOrCreateUuid,
@@ -45,13 +45,14 @@ interface NetStore {
   chat: ChatMessage[];
   uuid: string;
   name: string;
-  createRoom: (name: string, rules?: HkRules) => Promise<void>;
+  createRoom: (name: string, variant: VariantId, rules?: AnyRules) => Promise<void>;
   joinRoom: (code: string, name: string) => Promise<void>;
   leaveRoom: () => void;
   setSeat: (index: number, seat: LobbySeat) => Promise<void>;
   takeSeat: (index: number) => Promise<void>;
   fillWithAi: () => Promise<void>;
-  setRules: (rules: HkRules) => Promise<void>;
+  setRules: (rules: AnyRules) => Promise<void>;
+  setVariant: (variant: VariantId) => Promise<void>;
   startMatch: () => Promise<void>;
   backToLobby: () => Promise<void>;
   sendChat: (text: string) => void;
@@ -187,7 +188,7 @@ export const useNet = create<NetStore>((set, get) => {
       void transport().then((t) => t.warmUp?.());
     },
 
-    createRoom: async (name, rules) => {
+    createRoom: async (name, variant, rules) => {
       reset();
       saveName(name);
       const { uuid } = get();
@@ -195,8 +196,8 @@ export const useNet = create<NetStore>((set, get) => {
       const lobby: LobbyState = {
         hostUuid: uuid,
         seats: [{ kind: 'human', uuid, name }, { kind: 'open' }, { kind: 'open' }, { kind: 'open' }],
-        rulesJson: JSON.stringify(rules ?? DEFAULT_HK_RULES),
-        variant: 'hk',
+        rulesJson: JSON.stringify(rules ?? defaultRulesFor(variant)),
+        variant,
         match: null,
         matchCount: 0,
       };
@@ -298,13 +299,18 @@ export const useNet = create<NetStore>((set, get) => {
       await edit((l) => (l.match !== null ? null : { ...l, rulesJson: JSON.stringify(rules) }));
     },
 
+    setVariant: async (variant) => {
+      if (!isHost()) return;
+      await edit((l) => (l.match !== null || l.variant === variant ? null : { ...l, variant, rulesJson: JSON.stringify(defaultRulesFor(variant)) }));
+    },
+
     startMatch: async () => {
       const { lobby, uuid } = get();
       if (!room || !lobby || !isHost()) return;
       if (lobby.seats.some((s) => s.kind === 'open')) return;
       const config: MatchConfig = {
-        variant: 'hk',
-        rules: normalizeHkRules(JSON.parse(lobby.rulesJson) as Partial<HkRules>),
+        variant: lobby.variant,
+        rules: normalizeRulesFor(lobby.variant, JSON.parse(lobby.rulesJson)),
         seed: freshSeed(),
         seats: lobby.seats.map((s) =>
           s.kind === 'human' ? { name: s.name, ai: false, uuid: s.uuid } : s.kind === 'ai' ? { name: s.name, ai: true, level: s.level } : { name: '?', ai: true },

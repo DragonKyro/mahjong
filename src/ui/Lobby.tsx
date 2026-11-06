@@ -2,11 +2,11 @@
 
 import { useState } from 'react';
 import type { AiLevel } from '@/core/engine';
-import { normalizeHkRules, type HkRules } from '@/core/variants/hk';
+import { VARIANTS, normalizeRulesFor, type VariantId } from '@/core/variants';
 import { roomLink, type LobbySeat } from '@/net/room';
 import { AI_NAMES } from '@/store/gameStore';
 import { useNet } from '@/store/netStore';
-import { RulesEditor, RulesSummary } from './Home';
+import { RulesEditor, RulesSummary } from './RulesForms';
 import { Chat } from './TablePanels';
 
 export function Lobby() {
@@ -15,7 +15,8 @@ export function Lobby() {
   const lobby = net.lobby;
   if (!lobby) return <div className="center-msg">Opening the room…</div>;
   const isHost = lobby.hostUuid === net.uuid;
-  const rules = normalizeHkRules(JSON.parse(lobby.rulesJson) as Partial<HkRules>);
+  const variant = lobby.variant;
+  const rules = normalizeRulesFor(variant, JSON.parse(lobby.rulesJson));
   const online = new Set(net.people.map((p) => p.uuid));
   const mine = lobby.seats.findIndex((s) => s.kind === 'human' && s.uuid === net.uuid);
   const open = lobby.seats.filter((s) => s.kind === 'open').length;
@@ -119,9 +120,19 @@ export function Lobby() {
         </section>
 
         <section className="panel">
-          <h2>House rules</h2>
-          <RulesSummary rules={rules} />
-          <RulesEditor rules={rules} onChange={(r) => void net.setRules(r)} readOnly={!isHost} />
+          <h2>Game</h2>
+          <label className="row">
+            Variant
+            <select value={variant} disabled={!isHost} onChange={(e) => void net.setVariant(e.target.value as VariantId)}>
+              {VARIANTS.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.zh} {v.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <RulesSummary variant={variant} rules={rules} />
+          <RulesEditor variant={variant} rules={rules} onChange={(r) => void net.setRules(r)} readOnly={!isHost} />
         </section>
 
         <div className="panel chat-panel">

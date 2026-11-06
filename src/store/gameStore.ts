@@ -8,13 +8,18 @@ import { create } from 'zustand';
 import { chooseAction } from '@/core/ai';
 import { createMatch, pendingSeats, tryApply, type Action, type AiLevel, type MatchState } from '@/core/engine';
 import { freshSeed } from '@/core/rng';
-import { DEFAULT_HK_RULES, normalizeHkRules, type HkRules } from '@/core/variants/hk';
+import { defaultRulesFor, normalizeRulesFor, type AnyRules, type VariantId } from '@/core/variants';
 
 export interface SoloSetup {
+  variant: VariantId;
   name: string;
   levels: [AiLevel, AiLevel, AiLevel];
-  rules: HkRules;
+  /** House rules per variant (the last ones used for each). */
+  rules: Record<VariantId, AnyRules>;
 }
+
+const VARIANT_IDS: VariantId[] = ['hk', 'taiwan', 'riichi', 'american'];
+const allDefaults = () => Object.fromEntries(VARIANT_IDS.map((v) => [v, defaultRulesFor(v)])) as Record<VariantId, AnyRules>;
 
 export type Speed = 'relaxed' | 'normal' | 'fast';
 
@@ -41,17 +46,19 @@ interface GameStore {
   leave: () => void;
 }
 
-const SETUP_KEY = 'mahjong.solo.v1';
+const SETUP_KEY = 'mahjong.solo.v2';
 const SPEED_KEY = 'mahjong.speed';
 const HINT_KEY = 'mahjong.hints';
 
 function loadSetup(): SoloSetup {
-  const fallback: SoloSetup = { name: 'You', levels: ['normal', 'normal', 'normal'], rules: DEFAULT_HK_RULES };
+  const fallback: SoloSetup = { variant: 'hk', name: 'You', levels: ['normal', 'normal', 'normal'], rules: allDefaults() };
   try {
     const raw = localStorage.getItem(SETUP_KEY);
     if (!raw) return fallback;
     const v = JSON.parse(raw) as Partial<SoloSetup>;
-    return { name: v.name || 'You', levels: v.levels ?? fallback.levels, rules: normalizeHkRules(v.rules) };
+    const rules = allDefaults();
+    for (const id of VARIANT_IDS) rules[id] = normalizeRulesFor(id, v.rules?.[id]);
+    return { variant: v.variant && VARIANT_IDS.includes(v.variant) ? v.variant : 'hk', name: v.name || 'You', levels: v.levels ?? fallback.levels, rules };
   } catch {
     return fallback;
   }
@@ -104,8 +111,8 @@ export const useGame = create<GameStore>((set, get) => ({
     store(SETUP_KEY, JSON.stringify(setup));
     const names = [...AI_NAMES].sort(() => Math.random() - 0.5);
     const match = createMatch({
-      variant: 'hk',
-      rules: setup.rules,
+      variant: setup.variant,
+      rules: setup.rules[setup.variant],
       seed: freshSeed(),
       seats: [
         { name: setup.name.trim() || 'You', ai: false },
