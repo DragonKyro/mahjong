@@ -586,6 +586,8 @@ class Trainer:
             st["self_draws"] += s["selfDraws"]
             st["deal_ins"] += s["dealIns"]
             st["faan"] += s["faan"]
+            st["won_points"] += s.get("wonPoints", 0)
+            st["deal_in_points"] += s.get("dealInPoints", 0)
             st["points"] += ep["scores"][seat] - 500
             st["seat_matches"] += 1
 
@@ -737,40 +739,42 @@ class Trainer:
 
     def _finish_eval(self, e: dict) -> None:
         eps = e["episodes"]
-        A = B = 0.0
-        wins = [0, 0]
-        deal_ins = [0, 0]
+        keys = ["wins", "selfDraws", "dealIns", "faan", "bigWins", "wonPoints", "dealInPoints", "paidPoints"]
+        side = [dict.fromkeys(["points", *keys], 0.0), dict.fromkeys(["points", *keys], 0.0)]
         hands = 0
-        faan = 0.0
         for ep in eps:
             hands += ep["hands"]
             for seat, who in enumerate(ep["who"]):
-                side = 0 if who == LEARNER else 1
-                d = ep["scores"][seat] - 500
-                if side == 0:
-                    A += d
-                    faan += ep["stats"][seat]["faan"]
-                else:
-                    B += d
-                wins[side] += ep["stats"][seat]["wins"]
-                deal_ins[side] += ep["stats"][seat]["dealIns"]
+                x = side[0 if who == LEARNER else 1]
+                x["points"] += ep["scores"][seat] - 500
+                for k in keys:
+                    x[k] += ep["stats"][seat].get(k, 0)
         n = max(1, len(eps))
+        net, opp = side
         rec = {
             "update": e["update"],
             "vs": e["vs"],
             "matches": len(eps),
-            "points_per_match": (A - B) / n,
-            "wins": wins,
-            "deal_ins": deal_ins,
             "hands": hands,
-            "avg_win_faan": faan / max(1, wins[0]),
+            # The bottom line: the network's two seats minus the opponents' two, per match.
+            "points_per_match": (net["points"] - opp["points"]) / n,
+            "net": net,
+            "opp": opp,
+            # (older fields, kept for earlier rows)
+            "wins": [int(net["wins"]), int(opp["wins"])],
+            "deal_ins": [int(net["dealIns"]), int(opp["dealIns"])],
+            "avg_win_faan": net["faan"] / max(1, net["wins"]),
             "truncated": sum(1 for ep in eps if ep["truncated"]),
             "seconds": round(time.time() - e["t0"], 1),
         }
         with open(os.path.join(self.run_dir, "evals.jsonl"), "a") as f:
             f.write(json.dumps(rec) + "\n")
         self.write_progress()
-        print(f"  eval @{rec['update']} vs {rec['vs']}: {rec['points_per_match']:+.1f} points / match | wins {wins[0]}-{wins[1]} | deal-ins {deal_ins[0]}-{deal_ins[1]}")
+        w = rec["wins"]
+        print(
+            f"  eval @{rec['update']} vs {rec['vs']}: {rec['points_per_match']:+.1f} points / match | wins {w[0]}-{w[1]} | "
+            f"points per win {net['wonPoints'] / max(1, net['wins']):.1f} vs {opp['wonPoints'] / max(1, opp['wins']):.1f}"
+        )
         e["worker"].close()
 
     # ---- progress.md (rebuilt from metrics.jsonl and evals.jsonl, so it survives resumes)
@@ -811,16 +815,38 @@ class Trainer:
             verdict = "ahead of" if e["points_per_match"] > 0 else "behind"
             out += [f"**Latest vs the heuristic AI (update {e['update']}): {e['points_per_match']:+.1f} points per match — {verdict} it.**", ""]
 
+        def pair(e, f, fmt="{:.1f}"):
+            """'network / opponent' for one measure (– where an early row didn't record it)."""
+            if "net" not in e:
+                return "–"
+
+            def one(x):
+                try:
+                    return fmt.format(f(x, e))
+                except ZeroDivisionError:
+                    return "–"
+
+            return f"{one(e['net'])} / {one(e['opp'])}"
+
         def eval_table(rows, opp):
             t = [
-                f"| update | points / match | net wins % | {opp} wins % | net deal-ins % | {opp} deal-ins % | net avg faan | matches |",
-                "|---:|---:|---:|---:|---:|---:|---:|---:|",
+                f"| update | **points / match** | points / hand | win % | points per win | avg win faan | 6+ faan wins % | deal-in % | points per deal-in | paid on others' wins / hand |",
+                "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
             ]
             for e in rows:
                 h = max(1, e["hands"])
+                if "net" in e:
+                    win = pair(e, lambda x, e: 100 * x["wins"] / h)
+                    deal = pair(e, lambda x, e: 100 * x["dealIns"] / h)
+                    faan = pair(e, lambda x, e: x["faan"] / x["wins"])
+                else:  # an early row: wins / deal-ins / faan only
+                    win = f"{100 * e['wins'][0] / h:.1f} / {100 * e['wins'][1] / h:.1f}"
+                    deal = f"{100 * e['deal_ins'][0] / h:.1f} / {100 * e['deal_ins'][1] / h:.1f}"
+                    faan = f"{e['avg_win_faan']:.1f} / –"
                 t.append(
-                    f"| {e['update']} | {e['points_per_match']:+.1f} | {100 * e['wins'][0] / h:.1f} | {100 * e['wins'][1] / h:.1f} | "
-                    f"{100 * e['deal_ins'][0] / h:.1f} | {100 * e['deal_ins'][1] / h:.1f} | {e['avg_win_faan']:.1f} | {e['matches']} |"
+                    f"| {e['update']} | **{e['points_per_match']:+.1f}** | {pair(e, lambda x, e: x['points'] / h, '{:+.1f}')} | {win} | "
+                    f"{pair(e, lambda x, e: x['wonPoints'] / x['wins'])} | {faan} | {pair(e, lambda x, e: 100 * x['bigWins'] / x['wins'], '{:.0f}')} | "
+                    f"{deal} | {pair(e, lambda x, e: x['dealInPoints'] / x['dealIns'])} | {pair(e, lambda x, e: x['paidPoints'] / h)} |"
                 )
             return t
 
@@ -829,7 +855,17 @@ class Trainer:
             "## Against the heuristic AI (normal)",
             "",
             f"{n_eval} paired-seed matches each (every deal played twice with the seats swapped), the network playing greedily in two seats. "
-            "Points per match = network seats minus heuristic seats; win and deal-in rates are per hand, summed over both seats of a side.",
+            "Cells read **network / opponent**, each side being its two seats together.",
+            "",
+            "- **Points per match** (network seats minus opponent seats) is the bottom line, and it is what training maximises: the "
+            "reward is the score change of every hand, not whether the hand was won. A side can win fewer hands and still come out "
+            "ahead if its wins are bigger and it pays out less.",
+            "- **Points per win** and **6+ faan wins %**: how much its wins are worth (half-spicy payouts double per faan up to 4, "
+            "then every two).",
+            "- **Points per deal-in**: what a discard that loses costs it (half the table points under 半銃, all of it under 包).",
+            "- **Paid on others' wins / hand**: its share of the other side's self-draws and of 半銃 bystander payments. Keeping the "
+            "opponents' hands small and rare (denial) shows up here and in their points per win.",
+            "- Points per hand = won − dealt in − paid, per hand played.",
             "",
         ]
         out += eval_table(heur, "heur") if heur else ["_No evaluation finished yet._"]
@@ -841,8 +877,8 @@ class Trainer:
             "",
             "## Training, per 100 updates",
             "",
-            "| updates | phase | imitation acc | entropy | KL | clip frac | value expl. var | win % | deal-in % | avg win faan | s / update |",
-            "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+            "| updates | phase | imitation acc | entropy | KL | clip frac | value expl. var | win % | points per win | avg win faan | deal-in % | points per deal-in | s / update |",
+            "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
 
         def mean(rows, k):
@@ -860,8 +896,9 @@ class Trainer:
             out.append(
                 f"| {start}–{rows[-1]['update']} | {ph} | {fmt(mean(rows, 'bc_acc_fresh'))} | {fmt(mean(rows, 'entropy'), '{:.2f}')} | "
                 f"{fmt(mean(rows, 'kl'))} | {fmt(mean(rows, 'clipfrac'), '{:.2f}')} | {fmt(mean(rows, 'explained_var'), '{:.2f}')} | "
-                f"{fmt(mean(rows, 'win_rate'), '{:.1f}', 100)} | {fmt(mean(rows, 'deal_in_rate'), '{:.1f}', 100)} | "
-                f"{fmt(mean(rows, 'avg_win_faan'), '{:.2f}')} | {fmt(mean(rows, 'wall_s'), '{:.1f}')} |"
+                f"{fmt(mean(rows, 'win_rate'), '{:.1f}', 100)} | {fmt(mean(rows, 'points_per_win'), '{:.1f}')} | "
+                f"{fmt(mean(rows, 'avg_win_faan'), '{:.2f}')} | {fmt(mean(rows, 'deal_in_rate'), '{:.1f}', 100)} | "
+                f"{fmt(mean(rows, 'points_per_deal_in'), '{:.1f}')} | {fmt(mean(rows, 'wall_s'), '{:.1f}')} |"
             )
         exports = [m["export"] for m in metrics if m.get("export")]
         if exports:
@@ -961,6 +998,8 @@ class Trainer:
             rec["win_rate"] = st["wins"] / max(1, st["seat_hands"])
             rec["deal_in_rate"] = st["deal_ins"] / max(1, st["seat_hands"])
             rec["avg_win_faan"] = st["faan"] / max(1, st["wins"])
+            rec["points_per_win"] = st["won_points"] / max(1, st["wins"])
+            rec["points_per_deal_in"] = st["deal_in_points"] / max(1, st["deal_ins"])
             rec["matches"] = int(st["matches"])
         if job.phase == "ppo" and u % a.pool_every == 0:
             self.pool.append((u, {k: v.detach().cpu().clone() for k, v in self.model.state_dict().items() if not k.startswith("aux.")}))

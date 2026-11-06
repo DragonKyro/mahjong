@@ -62,7 +62,12 @@ The network only ever sees what its seat could see at a real table.
      - entropy bonus 0.01 → 0.002, Adam 3e-4 with cosine decay to 3e-5, grad clip 1.0, aux weight 0.1.
 3. **Evaluation (measurement only; it never feeds training).**
    - Every 100 updates: 64 paired-seed matches (each seed twice, seats swapped) against the heuristic AI, and against the update-100 imitation snapshot. The second measures how far self-play has moved past the starting point.
-   - The network plays greedily. Reported: points per match, wins, deal-ins, average winning faan.
+   - The network plays greedily.
+   - **Points per match** (network seats minus opponent seats) is the headline. It's also what training maximises: the reward is each hand's score change, not whether the hand was won.
+   - Where the points come from, per side:
+     - win %, points per win, average winning faan, and the share of wins at 6+ faan;
+     - deal-in %, and points lost per deal-in;
+     - points paid on the other side's wins: self-draw shares, 半銃 bystander shares, and 包. This is where denying big hands shows up.
    - The update-100 snapshot is also played against the heuristic once, to give the imitation baseline.
    - On `--resume`, the restored network is evaluated right away.
 

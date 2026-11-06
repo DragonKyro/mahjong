@@ -85,6 +85,14 @@ export interface SeatStats {
   dealIns: number;
   /** Faan summed over the seat's wins. */
   faan: number;
+  /** Wins of 6 faan or more. */
+  bigWins: number;
+  /** Points gained in the hands the seat won. */
+  wonPoints: number;
+  /** Points lost in hands won off the seat's discard (or its robbed kong) — its payment, 包 included. */
+  dealInPoints: number;
+  /** Points lost in the other hands someone won: self-draw shares, 半銃 bystander shares, liability. */
+  paidPoints: number;
 }
 
 export interface Episode {
@@ -167,14 +175,29 @@ function auxTargets(s: MatchState, seat: number, out: Float32Array, at: number):
 }
 
 function seatStats(s: MatchState): SeatStats[] {
-  const st = [0, 1, 2, 3].map(() => ({ wins: 0, selfDraws: 0, dealIns: 0, faan: 0 }));
+  const st = [0, 1, 2, 3].map(() => ({ wins: 0, selfDraws: 0, dealIns: 0, faan: 0, bigWins: 0, wonPoints: 0, dealInPoints: 0, paidPoints: 0 }));
   for (const h of s.history) {
+    if (h.wins.length === 0) continue;
+    const winners = new Set<number>();
+    const feeders = new Set<number>();
     for (const w of h.wins) {
-      st[w.seat]!.wins++;
-      st[w.seat]!.faan += w.score.value;
-      if (w.selfDraw) st[w.seat]!.selfDraws++;
-      else if (w.from !== null) st[w.from]!.dealIns++;
+      const x = st[w.seat]!;
+      x.wins++;
+      x.faan += w.score.value;
+      if (w.score.value >= 6) x.bigWins++;
+      winners.add(w.seat);
+      if (w.selfDraw) x.selfDraws++;
+      else if (w.from !== null) {
+        st[w.from]!.dealIns++;
+        feeders.add(w.from);
+      }
     }
+    h.deltas.forEach((d, seat) => {
+      const x = st[seat]!;
+      if (winners.has(seat)) x.wonPoints += d;
+      else if (feeders.has(seat)) x.dealInPoints += d;
+      else x.paidPoints += d;
+    });
   }
   return st;
 }
