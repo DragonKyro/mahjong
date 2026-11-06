@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { chooseAction } from './ai';
-import { applyAction, createMatch, pendingSeats, variantOf, type AiLevel, type MatchState } from './engine';
-import { tileIds } from './tiles';
-import { defaultRulesFor, type AnyRules, type VariantId } from './variants';
-import { DEFAULT_HK_RULES, type HkRules } from './variants/hk';
+import { chooseAction } from './index';
+import { applyAction, createMatch, pendingSeats, variantOf, type AiLevel, type MatchState } from '../engine';
+import { tileIds } from '../tiles';
+import { defaultRulesFor, type AnyRules, type VariantId } from '../variants';
+import { DEFAULT_HK_RULES, type HkRules } from '../variants/hk';
 
 function conserved(s: MatchState): boolean {
   const all = tileIds(variantOf(s).tiles);
@@ -88,5 +88,24 @@ describe('AI', () => {
       wins += handsWon(s);
     }
     expect(wins / hands).toBeGreaterThan(rate);
+  });
+
+  // Fixed seeds and deterministic AIs, so this is a stable check, not a sample.
+  it.each(['hk', 'taiwan', 'riichi', 'american'] as const)('%s: normal beats easy over paired seeds', (variant) => {
+    let normal = 0;
+    let easy = 0;
+    for (let i = 0; i < 8; i++) {
+      const mine = i % 2 ? [0, 2] : [1, 3];
+      let s = createMatch({
+        variant,
+        rules: defaultRulesFor(variant),
+        seed: 600 + Math.floor(i / 2),
+        seats: [0, 1, 2, 3].map((k) => ({ name: `P${k}`, ai: true, level: mine.includes(k) ? ('normal' as const) : ('easy' as const) })),
+      });
+      const start = s.scores.slice();
+      while (!s.over) s = applyAction(s, chooseAction(s, pendingSeats(s)[0]!)!);
+      s.scores.forEach((x, k) => (mine.includes(k) ? (normal += x - start[k]!) : (easy += x - start[k]!)));
+    }
+    expect(normal).toBeGreaterThan(easy);
   });
 });

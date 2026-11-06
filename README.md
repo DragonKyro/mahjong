@@ -2,7 +2,7 @@
 
 Mahjong in the browser, hosted on GitHub Pages: **https://dragonkyro.github.io/mahjong/**
 
-- **Play the computer** — three AI opponents (easy / normal / hard), each seat set separately.
+- **Play the computer** — three AI opponents (easy / normal / hard), each seat set separately. Each variant has its own AI, tuned to its rules: HK plans for the 3-faan minimum, Taiwan plays for speed, Riichi plays yaku / riichi / push-fold, American plans toward the card.
 - **Play with friends** — online rooms with a 4-letter code or an invite link. Empty seats can be filled with computer players. Rooms live in a Firebase Realtime Database; no accounts.
 - **Train** — a discard trainer: pick the tile that keeps a 14-tile hand closest to winning, then see every discard ranked by shanten and useful tiles.
 

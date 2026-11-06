@@ -18,7 +18,7 @@ src/core/            pure TS, no React/DOM — runs under Node
   rng.ts             mulberry32 seeded RNG
   hand.ts            decomposition, shanten, waits, discard acceptance (variant-agnostic: `sets` param)
   engine.ts          the table engine: MatchState + applyAction reducer, legal-move queries, views
-  ai.ts              chooseAction(state, seat) for every variant and level; waitInfo / suggestDiscard / nearestHands hints
+  ai/                one heuristic AI per variant (hk, taiwan, riichi, american) on a shared kit; index.ts dispatches + UI hints; bench.test.ts (BENCH=1)
   training.ts        discard puzzles
   variants/index.ts  Variant interface (features + hooks), registry, WinInput, doraFromIndicator
   variants/hk.ts     HK Old Style: HkRules, FAAN_TABLE, evaluateHk, settleHk, liability
@@ -73,10 +73,15 @@ Values follow Wikipedia "Hong Kong mahjong scoring rules": 清一色 7, 小三�
 
 ## AI notes
 
-Per variant: `potential()` has HK, Taiwan and Riichi value models (Riichi: a concealed hand counts on riichi, an open one needs yakuhai / tanyao / flush / toitoi; dora add). The Riichi AI declares riichi with the discard leaving the best winning acceptance, aborts 九種九牌 unless it holds 11+ orphans, folds against a declared riichi when far from ready, and wants a clear gain before opening a concealed hand. The American AI plays toward the nearest card hands (`closest` / `distance`), passes the least-wanted tiles in the Charleston, votes for the second Charleston when 4+ away, swaps for jokers when that doesn't hurt, and exposes only when it gets strictly closer. Measured over 12 AI matches each (2026-11-06): Taiwan about 98% of hands won, Riichi about 90% (riichi, ippatsu, ura, double ron and noten payments all occur), American about 65% (the rest wall games).
+`src/core/ai/` has **one heuristic AI per variant**, built on a shared toolkit:
+- `index.ts` dispatches by variant (and holds the UI hints: `suggestDiscard`, `waitInfo`, `nearestHands`).
+- `kit.ts` — hand reading, `evaluate` (shanten, acceptance, and value through the variant's `Plan`), `threats` / `danger`, `claimUtility`, and the `standardTurn` / `standardClaim` skeletons with hooks (kong, defence weight, per-candidate bonus, `finish`). Hard adds a one-draw lookahead (`readyQuality`) at one-away.
+- `hk.ts` — plans for the faan minimum (門前清, 無花 / seat flowers, value pongs, flush, all pongs); folds only a hopeless hand against three melds (半銃 makes dealing in cheap).
+- `taiwan.ts` — speed first (no minimum, linear tai); values concealment, flowers, value pongs; danger weighted up around the dealer (dealer tai).
+- `riichi.ts` — yaku first (riichi for concealed hands; open hands need yakuhai / tanyao / flush / toitoi; dora only on top of a yaku), riichi vs dama, furiten-aware waits, push / fold against riichi, no kong into someone's riichi, red fives kept, keishiki tenpai late (noten payments), 九種九牌.
+- `american.ts` — card planner (`closest` / `distance`), Charleston passes and vote, exposures only when strictly closer, joker buy-back, defence against exposed players (tiles their still-possible card hands need).
 
-
-`chooseAction` always returns a legal action for whatever the engine is waiting on. Normal/hard value hands by `potential()` (expected faan) and, at tenpai, by the waits that legally win (`canWin` with the minimum) — a tenpai that can't reach the minimum is worth no more than a 1-shanten hand. Hard adds defence (`threats` / `danger`: genbutsu, suji, dead honors, one-suit melds) only for a far-off hand against an opponent showing three melds. Measured (seat-rotated, 120 matches): normal and hard beat easy by a wide margin; hard ≈ normal on score but deals in ~20% less. Broader defence lost to plain efficiency (HK hands are cheap; folding costs wins) — don't widen it without measuring.
+Measured 2026-11-06 with paired seeds (each seed twice, seats swapped; identical AIs tie exactly), 40 paired matches, against the earlier single shared AI: HK +17 / +29 points per match (normal / hard; 259–176 wins, fewer deal-ins), Taiwan +155 / +212, Riichi +10,568 / +12,798, American +127 / +128 (147–101 wins). The biggest single lever was **acceptance weight**: 0.25 (the old value) was far too high for 16-tile Taiwan hands (0.05 best: +155 / match; 0 → −12), and lower also helped HK (0.1) and Riichi (0.15). Levels: normal beats easy decisively everywhere (`ai.test.ts` pins it on fixed seeds); **hard is not measurably stronger than normal** against AI opponents — broader defence lost points in every variant (fast cheap AI hands make folding expensive), so hard = normal + the lookahead (Riichi hard vs normal over 80 paired matches: +651 / match, inside the noise). Rerun with `BENCH=1 npx vitest run src/core/ai/bench.test.ts` (`V`, `A`, `B`, `N` env).
 
 ## Online (Firebase)
 

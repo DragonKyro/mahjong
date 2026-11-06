@@ -207,7 +207,7 @@ export interface Holding {
   exposures: Group[];
 }
 
-function exposuresFit(form: Form, exposures: readonly Group[]): boolean {
+export function exposuresFit(form: Form, exposures: readonly Group[]): boolean {
   if (exposures.length === 0) return true;
   if (form.hand.concealed) return false;
   const free = form.groups.filter((g) => g.n >= 3).map((g) => ({ ...g, used: false }));
