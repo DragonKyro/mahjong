@@ -111,7 +111,8 @@ export interface Charleston {
 
 export type HandEvent =
   | { t: 'bonus'; seat: number; tile: TileId }
-  | { t: 'discard'; seat: number; tile: TileId }
+  /** `tsumogiri`: the tile thrown was the one just drawn. */
+  | { t: 'discard'; seat: number; tile: TileId; tsumogiri?: boolean }
   | { t: 'riichi'; seat: number; tile: TileId }
   | { t: 'chi' | 'pong' | 'expose'; seat: number; from: number; tile: TileId }
   | { t: 'kong'; seat: number; how: 'exposed' | 'concealed' | 'added'; tile: TileId }
@@ -1188,6 +1189,7 @@ export function applyAction(state: MatchState, action: Action): MatchState {
       } else if (h.riichi[seat]) {
         h.riichi[seat]!.ippatsu = false;
       }
+      const tsumogiri = action.tile === h.drawn;
       p.hand.splice(i, 1);
       p.discards.push(action.tile);
       p.gone.push(action.tile);
@@ -1197,7 +1199,7 @@ export function applyAction(state: MatchState, action: Action): MatchState {
       h.forbidden = [];
       h.drawn = null;
       h.lastDiscard = { tile: action.tile, from: seat };
-      h.log.push({ t: 'discard', seat, tile: action.tile });
+      h.log.push({ t: 'discard', seat, tile: action.tile, ...(tsumogiri ? { tsumogiri: true } : {}) });
       afterDiscard(s, action.tile, seat);
       break;
     }

@@ -1,0 +1,22 @@
+# Conda env for training the mahjong agents (see training/README.md).
+#
+#   conda env create -f training/environment.yml
+#   conda activate train
+#   python -c "import torch; print(torch.cuda.is_available())"
+#
+# PyTorch comes from conda-forge's CUDA builds. cuda-version is pinned to the
+# installed NVIDIA driver (580.x → CUDA 13.0); raise it after a driver
+# upgrade, or replace `pytorch-gpu` with `pytorch` for a CPU-only machine.
+# Node.js isn't included — the env server runs on the system `node` (≥ 20).
+name: train
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.11
+  - numpy
+  - pytorch-gpu
+  - cuda-version=13.0
+  - tensorboard   # training curves: eval win rate vs baselines, losses, entropy
+  - tqdm
+  - pytest

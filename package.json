@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "Mahjong for the browser — Hong Kong Old Style (廣東牌) vs AI, online rooms over Firebase, and a discard trainer. Built as a multi-variant framework (Taiwan, Riichi and American planned).",
+  "description": "Mahjong for the browser — Hong Kong Old Style (廣東牌) vs AI, online rooms over Firebase, and a discard trainer. Also Taiwanese 16-tile, Japanese Riichi and American.",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
@@ -12,6 +12,7 @@
     "test:watch": "vitest",
     "typecheck": "tsc",
     "fix-lock": "node scripts/fix-lockfile.mjs",
+    "train:build": "vite build --config training/vite.config.ts",
     "deploy:rules": "npx -y firebase-tools@latest deploy --only database"
   },
   "dependencies": {

@@ -8,7 +8,7 @@ Browser mahjong on GitHub Pages: solo vs AI, online rooms (Firebase Realtime Dat
 
 ## Tech stack (locked)
 
-TypeScript (`strict`, `noUncheckedIndexedAccess`), Vite, React 18, Zustand 4, Firebase JS SDK (Realtime Database + anonymous Auth, lazy-loaded), Vitest + React Testing Library, plain CSS (one stylesheet). No ESLint / Prettier / Tailwind — removed on purpose to keep the repo lean like the sibling catan / card-collecting projects. Justify any new dependency here before installing it.
+TypeScript (`strict`, `noUncheckedIndexedAccess`), Vite, React 18, Zustand 4, Firebase JS SDK (Realtime Database + anonymous Auth, lazy-loaded), Vitest + React Testing Library, plain CSS (one stylesheet). No ESLint / Prettier / Tailwind — removed on purpose to keep the repo lean like the sibling catan / card-collecting projects. Justify any new dependency here before installing it. Training ([training/](training/README.md)) runs Python + PyTorch from the conda env `train`, outside npm; the TS side of it adds no npm dependency.
 
 ## Layout
 
@@ -20,6 +20,7 @@ src/core/            pure TS, no React/DOM — runs under Node
   engine.ts          the table engine: MatchState + applyAction reducer, legal-move queries, views
   ai/                one heuristic AI per variant (hk, taiwan, riichi, american) on a shared kit; index.ts dispatches + UI hints; bench.test.ts (BENCH=1)
   training.ts        discard puzzles
+  nn/                neural HK agent: hkEncode (seatView → planes + globals, ENCODER_VERSION), hkActions (78 slots, legalMask, decodeSlot, slotOf, ACTION_SPACE_VERSION), hkNet (TS forward pass, format mahjong/hknet@1, netAction)
   variants/index.ts  Variant interface (features + hooks), registry, WinInput, doraFromIndicator
   variants/hk.ts     HK Old Style: HkRules, FAAN_TABLE, evaluateHk, settleHk, liability
   variants/taiwan.ts Taiwanese 16-tile: TaiwanRules, TAI_TABLE, evaluateTaiwan, settleTaiwan (dealer tai per payer)
@@ -30,6 +31,8 @@ src/net/             room.ts (wire types, transport interface, identity, room co
 src/store/           gameStore (match + AI driver), netStore (rooms), trainingStore
 src/ui/              App, Home, RulesForms (per-variant editors), Table, TablePanels, Lobby, Training, RulesPage (tab per variant), Tile, flip.ts (move animation), styles.css, devDemo (dev only)
 scripts/             fix-lockfile.mjs, merge-db-rules.mjs
+training/            vite.config.ts (bundles → training/dist), environment.yml (conda `train`), README.md (the plan)
+  hk/                vec-env.ts + env-server.ts (Node, stdio JSON), model.py (PyTorch twin of hkNet + aux heads, export_net), env_client.py, test_model.py
 ```
 
 Path alias: `@/` → `src/`.
@@ -83,6 +86,15 @@ Values follow Wikipedia "Hong Kong mahjong scoring rules": 清一色 7, 小三�
 
 Measured 2026-11-06 with paired seeds (each seed twice, seats swapped; identical AIs tie exactly), 40 paired matches, against the earlier single shared AI: HK +17 / +29 points per match (normal / hard; 259–176 wins, fewer deal-ins), Taiwan +155 / +212, Riichi +10,568 / +12,798, American +127 / +128 (147–101 wins). The biggest single lever was **acceptance weight**: 0.25 (the old value) was far too high for 16-tile Taiwan hands (0.05 best: +155 / match; 0 → −12), and lower also helped HK (0.1) and Riichi (0.15). Levels: normal beats easy decisively everywhere (`ai.test.ts` pins it on fixed seeds); **hard is not measurably stronger than normal** against AI opponents — broader defence lost points in every variant (fast cheap AI hands make folding expensive), so hard = normal + the lookahead (Riichi hard vs normal over 80 paired matches: +651 / match, inside the noise). Rerun with `BENCH=1 npx vitest run src/core/ai/bench.test.ts` (`V`, `A`, `B`, `N` env).
 
+## Neural HK agent
+
+- **The view is the only input.** `seatView(s, seat)` copies exactly what that seat may know, and `encode(view)` reads nothing else (derived features such as shanten, waits and hypothetical faan are computed from the view). `nn.test.ts` scrambles the other hands, the unseen wall and the others' claim answers, and asserts the view and the encoding are unchanged. Keep it that way when adding features.
+- **The mask is engine legality.** `legalMask` must equal the set of slots of every action `tryApply` accepts (brute-force test). Discards are by kind, plus a separate 摸切 slot (the drawn tile); tile ids within a kind are otherwise interchangeable in HK.
+- **Versions:** any change to a feature's meaning or position bumps `ENCODER_VERSION`; any slot change bumps `ACTION_SPACE_VERSION`. `loadHkNet` refuses mismatched files.
+- **TS ↔ PyTorch:** `hkNet.ts` and `training/hk/model.py` share tensor names (`tensorShapes`); `test_model.py` checks the two forward passes agree to 1e-4 on real observations. Change both together.
+- The discard log records `tsumogiri` (the engine sets it when the thrown tile is the one just drawn); the encoder reads it.
+- Python: `conda activate train` (an un-activated `envs/train/python.exe` can't load cuDNN). `npm run train:build` before pytest.
+
 ## Online (Firebase)
 
 - Project `github-games-e7c7d`, shared with catan, card-collecting, tractor, … **All data under `DB_ROOT = 'mahjong'`** (`src/net/firebaseRoom.ts`); `database.rules.json` defines only that key. Deploy rules with `npm run deploy:rules` (predeploy merges into the live rules; never deploy the file alone). From Git Bash use `MSYS_NO_PATHCONV=1` for database paths.
@@ -99,6 +111,8 @@ npm run typecheck    # tsc
 npm run build        # tsc && vite build
 npm run fix-lock     # rewrite mirror URLs in package-lock.json to registry.npmjs.org
 npm run deploy:rules # merge + deploy database.rules.json
+npm run train:build  # bundle training/hk/env-server.ts → training/dist/hk-env.mjs
+python -m pytest training/hk -q   # (conda env `train`) TS ↔ PyTorch parity, env rollouts
 FIREBASE_LIVE=1 npx vitest run src/net/firebase.live.test.ts   # rooms + rules against the real database (prints the room code; remove it after)
 ```
 
@@ -116,4 +130,4 @@ FIREBASE_LIVE=1 npx vitest run src/net/firebase.live.test.ts   # rooms + rules a
 
 ## Status
 
-Done: engine + HK Old Style + trainer + real-table UI + Firebase rooms + variant framework (2026-11-05); Taiwanese 16-tile, Japanese Riichi, American (house card), tile-move animations, red-five and joker art (2026-11-06). Open: Riichi uma / oka and agari-yame, American blind passes and a loadable card, sound.
+Done: engine + HK Old Style + trainer + real-table UI + Firebase rooms + variant framework (2026-11-05); Taiwanese 16-tile, Japanese Riichi, American (house card), tile-move animations, red-five and joker art (2026-11-06). Neural HK agent groundwork (encoding, action space, network, env bridge; no training yet) (2026-11-06). Open: training the neural agent (training/README.md has the plan), Riichi uma / oka and agari-yame, American blind passes and a loadable card, sound.
