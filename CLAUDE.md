@@ -20,7 +20,7 @@ src/core/            pure TS, no React/DOM — runs under Node
   engine.ts          the table engine: MatchState + applyAction reducer, legal-move queries, views
   ai/                one heuristic AI per variant (hk, taiwan, riichi, american) on a shared kit; index.ts dispatches + UI hints; bench.test.ts (BENCH=1)
   training.ts        discard puzzles
-  nn/                neural HK agent: hkEncode (seatView → planes + globals, ENCODER_VERSION), hkActions (78 slots, legalMask, decodeSlot, slotOf, ACTION_SPACE_VERSION), hkNet (TS forward pass, format mahjong/hknet@1, netAction)
+  nn/                neural HK agent: hkEncode (seatView → planes + globals, ENCODER_VERSION), hkActions (78 slots, legalMask, decodeSlot, slotOf, ACTION_SPACE_VERSION), hkNet (TS forward pass, the compact `.hknet` file mahjong/hknet@2 with int8 weights, netAction)
   variants/index.ts  Variant interface (features + hooks), registry, WinInput, doraFromIndicator
   variants/hk.ts     HK Old Style: HkRules, FAAN_TABLE, evaluateHk, settleHk, liability
   variants/taiwan.ts Taiwanese 16-tile: TaiwanRules, TAI_TABLE, evaluateTaiwan, settleTaiwan (dealer tai per payer)
@@ -31,8 +31,8 @@ src/net/             room.ts (wire types, transport interface, identity, room co
 src/store/           gameStore (match + AI driver), netStore (rooms), trainingStore
 src/ui/              App, Home, RulesForms (per-variant editors), Table, TablePanels, Lobby, Training, RulesPage (tab per variant), Tile, flip.ts (move animation), styles.css, devDemo (dev only)
 scripts/             fix-lockfile.mjs, merge-db-rules.mjs
-training/            vite.config.ts (bundles → training/dist), environment.yml (conda `train`), README.md (the plan)
-  hk/                vec-env.ts + env-server.ts (Node, stdio JSON), model.py (PyTorch twin of hkNet + aux heads, export_net), env_client.py, test_model.py
+training/            vite.config.ts (bundles → training/dist), environment.yml (conda `train`), README.md (fair play, schedule, speed)
+  hk/                vec-env.ts (+ test) + env-server.ts (Node; JSON header + binary sparse payload), model.py (PyTorch twin of hkNet + aux heads, export_net / read_net), env_client.py, train.py (imitation → PPO self-play), test_model.py
 ```
 
 Path alias: `@/` → `src/`.
@@ -92,6 +92,9 @@ Measured 2026-11-06 with paired seeds (each seed twice, seats swapped; identical
 - **The mask is engine legality.** `legalMask` must equal the set of slots of every action `tryApply` accepts (brute-force test). Discards are by kind, plus a separate 摸切 slot (the drawn tile); tile ids within a kind are otherwise interchangeable in HK.
 - **Versions:** any change to a feature's meaning or position bumps `ENCODER_VERSION`; any slot change bumps `ACTION_SPACE_VERSION`. `loadHkNet` refuses mismatched files.
 - **TS ↔ PyTorch:** `hkNet.ts` and `training/hk/model.py` share tensor names (`tensorShapes`); `test_model.py` checks the two forward passes agree to 1e-4 on real observations. Change both together.
+- **Claims are simultaneous in training.** `HkVecEnv` asks every seat still deciding in a claim window from the same state and applies all answers after (asking one at a time would leak that the others passed). Aux heads use hidden hands as training labels only — never as inputs.
+- **Training schedule:** `train.py` imitates the heuristic AI for `--bc-updates` (100), then PPO self-play against itself and its own snapshots only (no heuristic opponents, no imitation loss). Evaluation against the heuristic is measurement only. Training overlaps with collection (a background thread on its own CUDA stream; the acting copy is a bf16 CUDA-graphed `Inference`).
+- **Speed-ups that must stay result-identical:** `standardShanten` folds groups through a (pair, sets) → max-partials table and `usefulDraws` skips isolated draws (`hand.test.ts` compares both against the plain algorithm); `applyAction` shares `config` and `history` between states (never mutate either).
 - The discard log records `tsumogiri` (the engine sets it when the thrown tile is the one just drawn); the encoder reads it.
 - Python: `conda activate train` (an un-activated `envs/train/python.exe` can't load cuDNN). `npm run train:build` before pytest.
 
@@ -112,7 +115,8 @@ npm run build        # tsc && vite build
 npm run fix-lock     # rewrite mirror URLs in package-lock.json to registry.npmjs.org
 npm run deploy:rules # merge + deploy database.rules.json
 npm run train:build  # bundle training/hk/env-server.ts → training/dist/hk-env.mjs
-python -m pytest training/hk -q   # (conda env `train`) TS ↔ PyTorch parity, env rollouts
+python -m pytest training/hk -q   # (conda env `train`) TS ↔ PyTorch parity, int8 export, env protocol, a training smoke run
+python training/hk/train.py --name hk1   # train (5,000 updates ≈ 4 h here); --resume training/runs/hk1
 FIREBASE_LIVE=1 npx vitest run src/net/firebase.live.test.ts   # rooms + rules against the real database (prints the room code; remove it after)
 ```
 
@@ -130,4 +134,4 @@ FIREBASE_LIVE=1 npx vitest run src/net/firebase.live.test.ts   # rooms + rules a
 
 ## Status
 
-Done: engine + HK Old Style + trainer + real-table UI + Firebase rooms + variant framework (2026-11-05); Taiwanese 16-tile, Japanese Riichi, American (house card), tile-move animations, red-five and joker art (2026-11-06). Neural HK agent groundwork (encoding, action space, network, env bridge; no training yet) (2026-11-06). Open: training the neural agent (training/README.md has the plan), Riichi uma / oka and agari-yame, American blind passes and a loadable card, sound.
+Done: engine + HK Old Style + trainer + real-table UI + Firebase rooms + variant framework (2026-11-05); Taiwanese 16-tile, Japanese Riichi, American (house card), tile-move animations, red-five and joker art (2026-11-06). Neural HK agent: encoding, action space, network, env bridge, trainer (imitation → PPO self-play), compact int8 policy files (2026-11-06; the full 5,000-update run not done yet). Open: the full training run and an in-game neural level, Riichi uma / oka and agari-yame, American blind passes and a loadable card, sound.

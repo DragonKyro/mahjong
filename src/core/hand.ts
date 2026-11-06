@@ -192,24 +192,84 @@ function explore(c: number[], from: number, len: number, honor: boolean): Triple
   return pruned;
 }
 
+// Folding the groups: for each (pair used, sets so far — capped at `sets`) keep
+// only the most partials reachable (capped at `sets` too). Shanten only grows
+// worse with fewer sets or partials, so nothing else can matter, and the fold
+// costs ~10 × |group options| per group instead of the product of all four.
+const fold = new Int8Array(12);
+const folded = new Int8Array(12);
+const GROUPS: readonly [number, number, boolean][] = [
+  [0, 9, false],
+  [9, 9, false],
+  [18, 9, false],
+  [27, 7, true],
+];
+
 /** Shanten of the standard (sets + pair) shape only. */
 export function standardShanten(counts: readonly number[], sets: number): number {
   const c = counts.slice();
-  const groups = [explore(c, 0, 9, false), explore(c, 9, 9, false), explore(c, 18, 9, false), explore(c, 27, 7, true)];
-  let best = 99;
-  for (const a of groups[0]!)
-    for (const b of groups[1]!)
-      for (const d of groups[2]!)
-        for (const e of groups[3]!) {
-          const p = a[2] + b[2] + d[2] + e[2];
-          if (p > 1) continue;
-          const m = Math.min(sets, a[0] + b[0] + d[0] + e[0]);
-          const t = Math.min(a[1] + b[1] + d[1] + e[1], sets - m);
-          const s = 2 * (sets - m) - t - p;
-          if (s < best) best = s;
+  const w = sets + 1;
+  fold.fill(-1);
+  fold[0] = 0;
+  for (const [from, len, honor] of GROUPS) {
+    const options = explore(c, from, len, honor);
+    folded.fill(-1);
+    for (let p = 0; p < 2; p++) {
+      for (let m = 0; m <= sets; m++) {
+        const t = fold[p * w + m]!;
+        if (t < 0) continue;
+        for (const [gm, gt, gp] of options) {
+          const np = p + gp;
+          if (np > 1) continue;
+          const at = np * w + Math.min(sets, m + gm);
+          const nt = Math.min(sets, t + gt);
+          if (nt > folded[at]!) folded[at] = nt;
         }
+      }
+    }
+    fold.set(folded);
+  }
+  let best = 99;
+  for (let p = 0; p < 2; p++) {
+    for (let m = 0; m <= sets; m++) {
+      const t = fold[p * w + m]!;
+      if (t < 0) continue;
+      const s = 2 * (sets - m) - Math.min(t, sets - m) - p;
+      if (s < best) best = s;
+    }
+  }
   return best;
 }
+
+/**
+ * Kinds whose draw could lower the shanten of `counts` (or complete it): a
+ * tile with no copy and nothing within two ranks in its suit can't join any
+ * set, pair or partial, so it never helps the standard shape. Thirteen
+ * orphans and seven pairs can use any new kind of theirs, so those are added
+ * when the shapes count.
+ */
+export function usefulDraws(counts: readonly number[], sets: number, opts: ShapeOptions = {}): Kind[] {
+  const special = sets === 4;
+  const all = special && !!opts.sevenPairs;
+  const orphans = special && opts.thirteenOrphans !== false;
+  const out: Kind[] = [];
+  for (let k = 0; k < PLAY_KINDS; k++) {
+    if (all || counts[k]! > 0 || (orphans && ORPHAN_SET.has(k))) {
+      out.push(k);
+      continue;
+    }
+    if (k >= 27) continue;
+    const lo = k - (k % 9);
+    for (let d = Math.max(lo, k - 2); d <= Math.min(lo + 8, k + 2); d++) {
+      if (counts[d]! > 0) {
+        out.push(k);
+        break;
+      }
+    }
+  }
+  return out;
+}
+const ORPHAN_SET = new Set(ORPHANS);
 
 export function sevenPairsShanten(counts: readonly number[]): number {
   let pairs = 0;
@@ -248,7 +308,7 @@ export function shanten(counts: readonly number[], sets: number, opts: ShapeOpti
 export function waits(counts: readonly number[], sets: number, opts: ShapeOptions = {}): Kind[] {
   const c = counts.slice();
   const out: Kind[] = [];
-  for (let k = 0; k < PLAY_KINDS; k++) {
+  for (const k of usefulDraws(counts, sets, opts)) {
     if (c[k]! >= 4) continue;
     c[k]!++;
     if (shanten(c, sets, opts) === -1) out.push(k);
@@ -287,7 +347,7 @@ export function analyzeDiscards(
     const s = shanten(c, sets, opts);
     const accepts: { kind: Kind; left: number }[] = [];
     let acceptance = 0;
-    for (let d = 0; d < PLAY_KINDS; d++) {
+    for (const d of usefulDraws(c, sets, opts)) {
       const left = 4 - visible[d]!;
       if (left <= 0) continue;
       c[d]!++;

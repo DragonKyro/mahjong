@@ -6,7 +6,7 @@ import { isBonus, kindOf, parseKinds, type Kind } from '../tiles';
 import { DEFAULT_HK_RULES } from '../variants/hk';
 import { ACTION_SPACE_VERSION, NUM_SLOTS, SLOT, SLOT_NAMES, decodeSlot, legalMask, slotOf } from './hkActions';
 import { ENCODER_VERSION, GLOBAL_DIM, KINDS, NUM_PLANES, OBS_DIM, encode, featureLayout, observe, seatView } from './hkEncode';
-import { DEFAULT_NET_CONFIG, NET_FORMAT, encodeFloat32, loadHkNet, netAction, tensorShapes, type HkNetConfig, type HkNetFile } from './hkNet';
+import { DEFAULT_NET_CONFIG, loadHkNet, netAction, readHkNet, tensorShapes, writeHkNet, type DType, type HkNetConfig } from './hkNet';
 
 const config = (seed: number, over: Partial<MatchConfig> = {}): MatchConfig => ({
   variant: 'hk',
@@ -41,7 +41,10 @@ function scramble(s: MatchState, seat: number, rng: Rng): MatchState {
   const ids = rng.shuffle(slots.map(({ arr, i }) => arr[i]!));
   slots.forEach(({ arr, i }, j) => (arr[i] = ids[j]!));
   if (drawnAt >= 0) h.drawn = h.players[h.turn]!.hand[drawnAt]!;
-  if (h.claim) h.claim.responses = h.claim.responses.map((r, o) => (o === seat ? r : rng.next() < 0.5 ? null : { type: 'pass' }));
+  if (h.claim) {
+    h.claim.responses = h.claim.responses.map((r, o) => (o === seat ? r : rng.next() < 0.5 ? null : { type: 'pass' }));
+    h.claim.options = h.claim.options.map((o, i) => (i === seat ? o : rng.next() < 0.5 ? [] : [{ type: 'pong' }, { type: 'win' }]));
+  }
   return x;
 }
 
@@ -178,19 +181,44 @@ describe('HK encoding', () => {
   });
 });
 
-function randomNet(c: HkNetConfig, seed: number, versions = { e: ENCODER_VERSION, a: ACTION_SPACE_VERSION }): HkNetFile {
+function randomTensors(c: HkNetConfig, seed: number) {
   const rng = new Rng(seed);
-  const tensors: HkNetFile['tensors'] = {};
+  const tensors: Record<string, { shape: number[]; data: Float32Array }> = {};
   for (const [name, shape] of Object.entries(tensorShapes(c))) {
-    const a = new Float32Array(shape.reduce((x, y) => x * y, 1)).map(() => (rng.next() - 0.5) * 0.2);
-    tensors[name] = { shape, data: encodeFloat32(a) };
+    tensors[name] = { shape, data: new Float32Array(shape.reduce((x, y) => x * y, 1)).map(() => (rng.next() - 0.5) * 0.2) };
   }
-  return { format: NET_FORMAT, encoderVersion: versions.e, actionSpaceVersion: versions.a, config: c, tensors };
+  return tensors;
+}
+
+function randomNet(c: HkNetConfig, seed: number, versions = { e: ENCODER_VERSION, a: ACTION_SPACE_VERSION }, weights: DType = 'i8'): Uint8Array {
+  return writeHkNet({ encoderVersion: versions.e, actionSpaceVersion: versions.a, config: c }, randomTensors(c, seed), weights);
 }
 
 const TINY: HkNetConfig = { ...DEFAULT_NET_CONFIG, channels: 8, blocks: 1, neck: 4, globalHidden: 16, hidden: 32, valueHidden: 8 };
 
 describe('HK network runtime', () => {
+  it('stores weights compactly and reads them back', () => {
+    const t = randomTensors(TINY, 9);
+    const head = { encoderVersion: ENCODER_VERSION, actionSpaceVersion: ACTION_SPACE_VERSION, config: TINY };
+    const sizes: Record<string, number> = {};
+    for (const [dtype, tol] of [['f32', 0], ['f16', 1e-4], ['i8', 0.1 / 127 / 2 + 1e-7]] as const) {
+      const bytes = writeHkNet(head, t, dtype);
+      sizes[dtype] = bytes.length;
+      const back = readHkNet(bytes).tensors;
+      for (const [name, { data }] of Object.entries(t)) {
+        const got = back[name]!;
+        let worst = 0;
+        data.forEach((x, i) => (worst = Math.max(worst, Math.abs(x - got[i]!))));
+        expect(worst, `${dtype} ${name}`).toBeLessThanOrEqual(tol);
+      }
+    }
+    const full = randomTensors(DEFAULT_NET_CONFIG, 1);
+    const big = { ...head, config: DEFAULT_NET_CONFIG };
+    const [i8, f32] = [writeHkNet(big, full, 'i8').length, writeHkNet(big, full, 'f32').length];
+    expect(i8 / f32).toBeLessThan(0.26); // int8 + per-row scales ≈ a quarter of float32
+    expect(i8).toBeLessThan(1.9e6);
+  });
+
   it('refuses a network built for another encoder or action space', () => {
     expect(() => loadHkNet(randomNet(TINY, 1, { e: ENCODER_VERSION + 1, a: ACTION_SPACE_VERSION }))).toThrow(/encoder/);
     expect(() => loadHkNet(randomNet(TINY, 1, { e: ENCODER_VERSION, a: ACTION_SPACE_VERSION + 1 }))).toThrow(/action space/);

@@ -1,122 +1,109 @@
 # Training a neural HK agent
 
-Status: **architecture, encoding, action space and the env bridge are built and tested; no training has run yet.** The training scheme below is the plan.
+Everything runs locally:
+- Node worker processes play matches with the real engine;
+- one Python process batches their decisions on the GPU and trains.
+
+The browser isn't involved.
 
 ```bash
 conda env create -f training/environment.yml   # once (the same `train` env card-collecting uses)
-conda activate train                           # needed: it puts the env's CUDA / cuDNN DLLs on PATH
-npm run train:build                            # bundle the env server → training/dist/hk-env.mjs
-python -m pytest training/hk -q                # TS ↔ PyTorch parity, spec, rollouts
+conda activate train                           # needed: puts the env's CUDA / cuDNN DLLs on PATH
+npm run train:build                            # bundle the env server → training/dist/hk-env.mjs (train.py also does it)
+python -m pytest training/hk -q                # TS ↔ PyTorch parity, int8 export, env protocol, a training smoke run
+
+python training/hk/train.py --name hk1                  # 5,000 updates: 100 imitation + 4,900 self-play
+python training/hk/train.py --resume training/runs/hk1  # carry on after a stop (Ctrl-C saves a checkpoint)
 ```
 
-Running `envs/train/python.exe` directly, without activating the env, leaves `Library/bin` off PATH. cuDNN then fails to load (`Cannot load symbol cudnnGetVersion`).
+Running `envs/train/python.exe` without activating the env leaves `Library/bin` off PATH. cuDNN then fails to load (`Cannot load symbol cudnnGetVersion`).
 
-## Pieces
+Outputs go to `training/runs/<name>/`:
 
 | File | What |
 |---|---|
-| `src/core/nn/hkEncode.ts` | `seatView` (what one seat may know) → `encode` (tile planes + globals). `ENCODER_VERSION`. |
-| `src/core/nn/hkActions.ts` | The 78 action slots, `legalMask`, `decodeSlot`, `slotOf`. `ACTION_SPACE_VERSION`. |
-| `src/core/nn/hkNet.ts` | The forward pass in TS (browser / Node), the weight format `mahjong/hknet@1`, masked argmax / sampling, `netAction`. |
-| `src/core/nn/nn.test.ts` | Mask = engine legality (brute force); scrambling hidden info leaves the observation unchanged; a random net plays legally. |
-| `training/hk/vec-env.ts`, `env-server.ts` | Batched matches over stdio (JSON lines, base64 arrays). |
-| `training/hk/model.py` | The same network in PyTorch, plus aux heads; `export_net` writes the TS format. |
-| `training/hk/env_client.py`, `test_model.py` | Python client; parity and rollout tests. |
+| `metrics.jsonl` | One line per update: losses, entropy, KL, clip fraction, explained variance, win / deal-in rates, timings |
+| `evals.jsonl` | The periodic evaluations |
+| `policies/update_NNNNN.hknet`, `latest.hknet` | Compact networks the TS runtime loads (`loadHkNet`) |
+| `ckpt/latest.pt` | Model, optimiser, snapshot pool, for `--resume` |
+| `config.json` | The run's settings |
 
-## Observation (encoder v1)
+## Fair play
 
-7,780 floats: 201 planes × 34 tile kinds + 946 globals. About 6% are non-zero. All seats are relative: me, next (下家), across, prev (上家).
+The network only ever sees what its seat could see at a real table.
 
-- **My tiles:** concealed counts (4 threshold planes), the drawn tile, and the tile on offer in a claim window.
-- **Every player:**
-  - meld tiles, by type (pong, exposed / concealed / added kong, chow), plus the claimed tile and one plane per meld slot;
-  - each slot's metadata: type, who fed it, and when;
-  - everything they discarded (4 threshold planes), what is still in their pond, their 摸切 discards and their last discard;
-  - their last 24 discards in order, one plane each, with 摸切 / called / age / time flags;
-  - bonus tiles (all 8), seat flowers, full sets, concealed tile count, discards made, and open / concealed status.
-- **Table:** unseen copies of each kind from my view (4 planes), and the faan a pong of each kind is worth to each seat.
-- **Match:**
-  - seat and prevailing wind, dealer, hand of the round, hands left, all-last, 連莊 streak;
-  - scores, ranks and leads;
-  - phase, whose turn, how the turn player drew, kong chain;
-  - claim kind and source;
-  - live tiles left (with last-tile and ≤5-tile flags for 海底 and 五子包生), replacement draws, discard and call counts, no-calls-yet;
-  - every house rule and the whole faan table, so one network can play any rule set.
-- **Derived from the same view:**
-  - shanten;
-  - per discard: the shanten it leaves, whether it's best, and its acceptance;
-  - waits, and the faan of a win on each wait by discard or by self-draw (0 if it can't reach the minimum);
-  - tiles that improve the hand;
-  - the shanten after each offered pong / kong / chow;
-  - the faan and points of the win on offer;
-  - the legal-action mask.
+- **Inputs.**
+  - `seatView(state, seat)` (`src/core/nn/hkEncode.ts`) copies only what that seat may know: its own tiles and drawn tile, and the public table.
+  - It never reads the wall (the tiles to come, the replacement tiles), another player's concealed tiles (starting hand or later), another seat's drawn tile, or another seat's claim answer.
+  - `encode` reads nothing but that view.
+  - `nn.test.ts` shuffles all of that hidden state, including the other seats' claim options and answers, on hundreds of real positions. It asserts the view and the encoding are bit-for-bit unchanged.
+- **Claims are simultaneous.** In a claim window the env asks every seat still deciding at once, from the same state, and applies all the answers afterwards (`vec-env.test.ts` checks this). Asking seats one by one would leak information: the engine closes a window early once nobody left can outrank the best answer, so being asked at all would reveal that the others passed.
+- **The value head** reads the same view as the policy. There is no privileged critic.
+- **Aux heads (training only):**
+  - They learn to predict each opponent's concealed tiles, readiness and waits from the seat's own view, scored against the real hidden hands.
+  - Those hands are labels, never inputs. The aux heads aren't exported and never influence a decision. This is learning to read the table, as a player does when hands are revealed.
+  - `--aux-coef 0` switches them off.
+- **The heuristic teacher** (imitation phase only) reads only its own hand and public information.
 
-Hidden information is excluded by construction. `seatView` never reads the wall order, another seat's concealed tiles, its drawn tile, or its claim answers. The scramble test enforces this.
+## Schedule
 
-## Actions (action space v1)
+1. **Updates 1–100: imitation.**
+   - Every seat is the heuristic AI (normal). Each of its decisions is a training example: cross-entropy towards its move, plus the value head on the hand's outcome, plus the aux heads.
+   - Without this warm start, self-play has no reward to learn from: random play almost never reaches the 3-faan minimum.
+   - The log shows `acc`, the agreement with the teacher on data the network hasn't trained on yet.
+2. **Updates 101–5,000: PPO self-play, with no heuristic involvement.** No imitation loss, no KL to the teacher, no heuristic opponents.
+   - **Opponents:** 75% of the workers play four copies of the current network. The rest play two seats against one of its own past snapshots, taken every 20 updates (the last 20 are kept; the update-100 snapshot starts the pool).
+   - **Reward:** each hand's score change / 32 points. Episodes are hands, with γ = 1 and GAE λ = 0.95.
+   - **Optimisation:**
+     - 16,384 decisions per update, 3 epochs, minibatch 4,096;
+     - clip 0.2, early stop past 1.5 × the 0.03 KL target, Huber value loss;
+     - entropy bonus 0.01 → 0.002, Adam 3e-4 with cosine decay to 3e-5, grad clip 1.0, aux weight 0.1.
+3. **Evaluation (measurement only; it never feeds training).**
+   - Every 250 updates: 64 paired-seed matches (each seed twice, seats swapped) against the heuristic AI, and against the update-100 imitation snapshot. The second measures how far self-play has moved past the starting point.
+   - The network plays greedily. Reported: points per match, wins, deal-ins, average winning faan.
 
-78 slots cover every HK decision. Flowers, 八仙過海 and 七搶一 are automatic, and HK has no riichi, abort or Charleston.
+## Speed
 
-| Slots | Action |
+Measured on this machine (Xeon w5-2445 10C/20T, RTX A2000 12 GB): about **3 s per update**, so 5,000 updates take about 4 hours. Where the speed comes from:
+
+- **Env workers:** 16 Node processes × 48 matches (`vec-env.ts`), served in 4 groups, so the GPU decides for one group while the others play.
+- **Faster engine and encoder** (results identical, guarded by tests):
+  - shanten folds its groups through a tiny table;
+  - draws that can't help are skipped;
+  - the engine shares the immutable config and history between states instead of copying them.
+- **Sparse binary transport:** an observation is 7,780 floats but only ~6% non-zero. Workers send (index, value) pairs as raw bytes after a JSON header, and the GPU scatters them back.
+- **bf16 everywhere:** autocast for training (2.4× faster than fp32 here), and a bf16 acting copy of the network replayed through CUDA graphs, one launch per batch.
+- **Overlap:** update k trains in a background thread on its own CUDA stream while update k+1 is collected. The policy is at most one update behind; every decision stores the log-probability of the policy that made it, so PPO's ratios stay exact.
+
+Knobs:
+- `--workers` and `--envs` set the CPU side.
+- `--samples` and `--epochs` set the GPU work per update.
+- `--precision fp16|tf32` is available if bf16 misbehaves.
+
+## Network and files
+
+| File | What |
 |---|---|
-| 0–33 | discard a tile of kind *k* from the hand |
-| 34 | 摸切: discard the tile just drawn (opponents can see the difference) |
-| 35–68 | kong kind *k* (concealed, or added to a pong) |
-| 69 | 自摸 self-drawn win |
-| 70 | pass |
-| 71 | 食糊 / 搶槓 win on the discard or the robbed kong |
-| 72 | pong |
-| 73 | kong the discard |
-| 74–76 | chow, with the discard as the low / middle / high tile |
-| 77 | ready (confirm the hand result; never asked of the net) |
+| `src/core/nn/hkEncode.ts` | `seatView` → `encode`: 201 tile planes × 34 kinds + 946 globals. `ENCODER_VERSION`. |
+| `src/core/nn/hkActions.ts` | 78 action slots, `legalMask`, `decodeSlot`, `slotOf`. `ACTION_SPACE_VERSION`. |
+| `src/core/nn/hkNet.ts` | The forward pass in TS, the `.hknet` file format (`writeHkNet` / `readHkNet`), masked sampling, `netAction`. |
+| `training/hk/model.py` | The same network in PyTorch, plus aux heads; `export_net` / `read_net` / `quantized_copy`. |
+| `training/hk/vec-env.ts`, `env-server.ts` | Batched matches and their stdio protocol. |
+| `training/hk/env_client.py` | The Python side of that protocol. |
+| `training/hk/train.py` | The trainer. |
+| `training/hk/test_model.py` | The Python tests. |
 
-## Network
+**The network.** A 1-D ResNet over the 34 tile kinds:
+1. Stem: conv3 over the planes, plus the globals projected per channel → 128 channels.
+2. 6 residual blocks, which start as the identity; no normalisation.
+3. A 1×1 conv down to 32 channels, flattened, joined with a 256-unit global embedding → 512.
+4. Heads: policy (78 logits, plus a per-kind term on the discard and kong slots), value, and aux (training only).
 
-A 1-D ResNet over the 34 kinds, with a global-feature branch.
+1.83M exported parameters.
 
-1. **Stem:** a conv over the planes, plus a projection of the globals added per channel → 128 channels.
-2. **Body:** 6 residual blocks (conv3 → relu → conv3, starting as the identity, no normalisation).
-3. **Trunk:** a 1×1 conv down to 32 channels, flattened, joined with a 256-unit global embedding → 512.
-4. **Heads:**
-   - policy: 78 logits from the trunk, plus a per-kind term on the discard and kong slots;
-   - value: 128 → 1;
-   - aux (training only): each opponent's concealed tiles, whether they are ready, and their waits.
-
-Size and measured speed:
-
-| | |
-|---|---|
-| Parameters exported | 1.83M (9.8 MB as base64 float32) |
-| TS forward | ~32 ms per decision |
-| RTX A2000, batch 1,024 | 15 ms inference, 46 ms per training step |
-| Env server, per Node process | ~1,500 decisions / s (self-play), ~1,000 with heuristic seats |
-
-## Training plan (not started)
-
-1. **Behaviour cloning warm start.**
-   - Record heuristic-AI self-play (normal / hard) through the env: observation, mask, and `slotOf(action)`.
-   - Train policy cross-entropy, value (the hand's score change) and the aux heads on a few million decisions.
-   - Why: random play almost never reaches the 3-faan minimum, so PPO from scratch gets almost no reward signal.
-2. **PPO self-play.**
-   - **Setup:** Node env workers (cores − 2, 32–64 matches each) feed a GPU learner that batches every request.
-   - **Opponents:** about 50% pure self-play, 30% a pool of the last ~20 checkpoints, 20% the heuristic AI (normal / hard), so the policy can't drift into beating only itself.
-   - **Reward:**
-     - each hand's score change / 500, plus a small final-rank bonus;
-     - γ = 1, GAE λ 0.95;
-     - start with one hand per episode (lower variance), then move to whole matches so it learns all-last play.
-   - **PPO settings:** rollouts of 128, minibatches of 4,096, 3–4 epochs, clip 0.2, entropy 0.01 → 0.003, Adam 3e-4 with cosine decay, grad-norm clip 1.0.
-   - **Aux losses:** the aux heads (opponents' hands / ready / waits) stay on as auxiliary losses, which shapes the trunk around reading the table.
-   - **Optional later:** an oracle teacher with hidden features, distilled into this net (Suphx style).
-3. **Evaluation.**
-   - Paired-seed duels: every seed played twice with seats swapped, as in `src/core/ai/bench.test.ts`.
-   - Every N updates, against heuristic normal / hard and past checkpoints.
-   - Tracked: points per match, win / deal-in rates, average faan, an Elo ladder.
-4. **Ship.**
-   - Export → `public/` (float16 would halve the file).
-   - Load it lazily as a "neural" HK AI level through `netAction`.
-
-Planned speed-ups:
-- send observations sparsely (only ~6% are non-zero) or in binary rather than base64 JSON;
-- run several env processes per learner.
-
-Not built yet: `train.py` (BC + PPO), the teacher-data recorder, `evaluate.py`, and the UI hook.
+**The `.hknet` file.**
+- **Layout:** `'HKN2'`, then a JSON header (shapes, dtypes, offsets, config, versions), then the data.
+- **Weights:** int8, with one float32 scale per output row. Biases are float32.
+- **Size:** 1.85 MB, against 7.3 MB as float32 and 9.8 MB as the earlier base64 JSON.
+- **Learning is unaffected:** training keeps float32 master weights, and only the exported file is rounded. Every export logs how closely the int8 file plays like the float network on that update's positions (`int8_agreement`, `int8_kl`). On a test network: 100% the same moves, KL ~1e-6.
+- **Other storage:** `writeHkNet` / `export_net` can also write f16 or f32.

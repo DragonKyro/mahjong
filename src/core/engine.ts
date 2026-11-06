@@ -256,6 +256,18 @@ const countOf = (tiles: readonly TileId[], k: Kind) => tiles.reduce((n, t) => n 
 /** Forward distance in turn order from `from` to `to` (1–3). */
 export const turnDistance = (from: number, to: number) => (to - from + 4) % 4 || 4;
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
+/**
+ * The next state's working copy. The config and finished hands' results are
+ * never written after they're made, so they're shared instead of copied (the
+ * history array itself is copied, so pushing to it leaves the input alone).
+ */
+function nextState(s: MatchState): MatchState {
+  // Blank the shared fields in place (keeping the key order, which checksum() sees), copy, put them back.
+  const out = clone({ ...s, config: null, history: null }) as unknown as MatchState;
+  out.config = s.config;
+  out.history = s.history.slice();
+  return out;
+}
 
 function takeTiles(hand: TileId[], k: Kind, n: number): TileId[] {
   const out: TileId[] = [];
@@ -1170,7 +1182,7 @@ function sameClaim(a: Claim, b: Claim): boolean {
 /** Apply `action`; throws IllegalAction when it isn't legal right now. Never mutates `state`. */
 export function applyAction(state: MatchState, action: Action): MatchState {
   if (state.over) throw new IllegalAction('the match is over');
-  const s = clone(state);
+  const s = nextState(state);
   const h = s.hand;
   const seat = action.seat;
   if (!(seat >= 0 && seat < 4)) throw new IllegalAction('no such seat');
@@ -1331,7 +1343,7 @@ export function wallStacks(s: MatchState, seat: number): { ids: TileId[]; up: Ti
 /** Will the match end once the current (finished) hand is confirmed? */
 export function isFinalHand(s: MatchState): boolean {
   if (!s.hand.result) return false;
-  const c = clone(s);
+  const c = nextState(s);
   advance(c);
   return c.over;
 }

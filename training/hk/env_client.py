@@ -1,6 +1,10 @@
-"""Python side of training/hk/env-server.ts: spawns the bundled Node env
-server (`npm run train:build` -> training/dist/hk-env.mjs) and speaks its
-line-delimited JSON protocol. Observations and masks arrive as numpy arrays.
+"""Python side of training/hk/env-server.ts.
+
+Spawns the bundled Node env server (`npm run train:build` ->
+training/dist/hk-env.mjs) and speaks its protocol: JSON lines in; a JSON
+header line plus a binary payload out. `send_*` and `recv` are split so a
+learner can start every worker on its step and then collect the replies
+while they all run in parallel.
 """
 
 from __future__ import annotations
@@ -24,79 +28,121 @@ def build_bundle() -> None:
 
 @dataclass
 class Batch:
+    n: int
     env: list[int]
     seat: list[int]
     who: list[str]
-    obs: np.ndarray  # [n, obsDim] float32
-    mask: np.ndarray  # [n, numSlots] uint8
+    hint: np.ndarray  # [n] heuristic slot for teacher seats, else -1
     reward: np.ndarray  # [n] reward since each seat's previous request
-    aux: np.ndarray | None  # [n, auxDim] float32 (training targets) or None
+    seq: list[int]
+    nnz: np.ndarray  # [n] uint16 non-zeros per observation row
+    idx: np.ndarray  # [nnzTotal] uint16 feature index
+    val: np.ndarray  # [nnzTotal] float32 value
+    mask: np.ndarray  # [n, numSlots] uint8
+    aux: np.ndarray | None  # [n, auxDim] float32 training labels, or None
     done: list[dict] = field(default_factory=list)
     episodes: list[dict] = field(default_factory=list)
+    finished: bool = False
+
+    def dense(self, obs_dim: int) -> np.ndarray:
+        out = np.zeros((self.n, obs_dim), dtype=np.float32)
+        rows = np.repeat(np.arange(self.n), self.nnz.astype(np.int64))
+        out[rows, self.idx.astype(np.int64)] = self.val
+        return out
 
 
 class EnvClient:
     def __init__(self, node: str = "node", build: bool = False):
         if build or not os.path.exists(BUNDLE):
             build_bundle()
-        self.proc = subprocess.Popen(
-            [node, BUNDLE],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            bufsize=1,
-        )
-        self.spec = self._call({"cmd": "spec"})
+        self.proc = subprocess.Popen([node, BUNDLE], stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=1 << 20)
+        self.send({"cmd": "spec"})
+        self.spec, _ = self._recv_raw()
 
-    def _call(self, msg: dict) -> dict:
-        assert self.proc.stdin and self.proc.stdout
-        self.proc.stdin.write(json.dumps(msg) + "\n")
+    # ---- protocol
+    def send(self, msg: dict) -> None:
+        assert self.proc.stdin
+        self.proc.stdin.write((json.dumps(msg) + "\n").encode("utf-8"))
         self.proc.stdin.flush()
-        reply = json.loads(self.proc.stdout.readline())
-        if not reply.get("ok"):
-            raise RuntimeError(f"env server: {reply.get('error')}")
-        return reply
 
-    def _batch(self, r: dict) -> Batch:
-        obs_dim, slots = self.spec["obsDim"], self.spec["numSlots"]
+    def _recv_raw(self) -> tuple[dict, bytes]:
+        assert self.proc.stdout
+        line = self.proc.stdout.readline()
+        if not line:
+            raise RuntimeError("env server exited")
+        header = json.loads(line)
+        payload = self.proc.stdout.read(header.get("bytes", 0)) if header.get("bytes") else b""
+        if not header.get("ok"):
+            raise RuntimeError(f"env server: {header.get('error')}")
+        return header, payload
+
+    def recv(self) -> Batch:
+        h, p = self._recv_raw()
+        n, total = h["n"], h["nnzTotal"]
+        slots, aux_dim = self.spec["numSlots"], self.spec["auxDim"]
+        off = 0
+        val = np.frombuffer(p, "<f4", total, off)
+        off += 4 * total
         aux = None
-        if r.get("aux"):
-            aux = np.frombuffer(base64.b64decode(r["aux"]), dtype="<f4").reshape(-1, self.spec["auxDim"])
+        if h["aux"]:
+            aux = np.frombuffer(p, "<f4", n * aux_dim, off).reshape(n, aux_dim)
+            off += 4 * n * aux_dim
+        idx = np.frombuffer(p, "<u2", total, off)
+        off += 2 * total
+        nnz = np.frombuffer(p, "<u2", n, off)
+        off += 2 * n
+        mask = np.frombuffer(p, "u1", n * slots, off).reshape(n, slots)
         return Batch(
-            env=r["env"],
-            seat=r["seat"],
-            who=r["who"],
-            obs=np.frombuffer(base64.b64decode(r["obs"]), dtype="<f4").reshape(-1, obs_dim),
-            mask=np.frombuffer(base64.b64decode(r["mask"]), dtype=np.uint8).reshape(-1, slots),
-            reward=np.asarray(r["reward"], dtype=np.float32),
+            n=n,
+            env=h["env"],
+            seat=h["seat"],
+            who=h["who"],
+            hint=np.asarray(h["hint"], dtype=np.int64),
+            reward=np.asarray(h["reward"], dtype=np.float32),
+            seq=h["seq"],
+            nnz=nnz,
+            idx=idx,
+            val=val,
+            mask=mask,
             aux=aux,
-            done=r["done"],
-            episodes=r["episodes"],
+            done=h["done"],
+            episodes=h["episodes"],
+            finished=h["finished"],
         )
 
+    def send_reset(self, **options) -> None:
+        self.send({"cmd": "reset", "options": options})
+
+    def send_step(self, actions) -> None:
+        self.send({"cmd": "step", "actions": [int(a) for a in actions]})
+
+    # ---- blocking conveniences
     def reset(self, **options) -> Batch:
-        return self._batch(self._call({"cmd": "reset", "options": options}))
+        self.send_reset(**options)
+        return self.recv()
 
     def step(self, actions) -> Batch:
-        return self._batch(self._call({"cmd": "step", "actions": [int(a) for a in actions]}))
+        self.send_step(actions)
+        return self.recv()
 
     def ts_forward(self, net_path: str, obs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """The TS runtime's forward pass on `obs` (export parity checks)."""
         data = base64.b64encode(np.ascontiguousarray(obs, dtype="<f4").tobytes()).decode("ascii")
-        r = self._call({"cmd": "forward", "path": net_path, "obs": data})
-        logits = np.frombuffer(base64.b64decode(r["logits"]), dtype="<f4").reshape(-1, self.spec["numSlots"])
-        return logits, np.asarray(r["value"], dtype=np.float32)
+        self.send({"cmd": "forward", "path": net_path, "obs": data})
+        h, _ = self._recv_raw()
+        logits = np.frombuffer(base64.b64decode(h["logits"]), dtype="<f4").reshape(-1, self.spec["numSlots"])
+        return logits, np.asarray(h["value"], dtype=np.float32)
 
     def close(self) -> None:
         if self.proc.poll() is None:
             try:
-                assert self.proc.stdin
-                self.proc.stdin.write(json.dumps({"cmd": "close"}) + "\n")
-                self.proc.stdin.flush()
+                self.send({"cmd": "close"})
             except OSError:
                 pass
-            self.proc.wait(timeout=10)
+            try:
+                self.proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
 
     def __enter__(self) -> "EnvClient":
         return self

@@ -1,46 +1,56 @@
-// stdio bridge from HkVecEnv to the Python learner. One JSON object per line
-// in, one per line out, strictly request / response; diagnostics go to stderr.
+// stdio bridge from HkVecEnv to the Python learner. Requests are JSON lines
+// on stdin. Each reply is one JSON header line on stdout, followed by
+// `bytes` bytes of binary payload. Diagnostics go to stderr.
 //
-//   → {"cmd":"spec"}
-//   ← {"ok":true,"obsDim","planes","kinds","globalDim","numSlots","auxDim",
-//      "slotNames","featureLayout","encoderVersion","actionSpaceVersion","netFormat","defaultNet"}
-//   → {"cmd":"reset","options":{numEnvs, seed, seats, rewardScale, rankReward, rules, autoForced, aux, maxActions}}
-//   → {"cmd":"step","actions":[slot, …]}            one per request of the last batch
-//   ← {"ok":true,"n","env":[…],"seat":[…],"who":[…],"obs":"<b64 f32 n×obsDim>",
-//      "mask":"<b64 u8 n×numSlots>","reward":[…],"aux":"<b64 f32 n×auxDim>"|null,
-//      "done":[{env,seat,who,reward}],"episodes":[{env,match,seed,who,scores,hands,actions,truncated}]}
-//   → {"cmd":"forward","path":"<net.json>","obs":"<b64 f32 n×obsDim>"}
-//   ← {"ok":true,"logits":"<b64 f32 n×numSlots>","value":[…]}   (the TS forward pass, for export parity)
+//   → {"cmd":"spec"}                     ← header only: sizes, names, versions, the default net
+//   → {"cmd":"reset","options":{…VecEnvOptions}}
+//   → {"cmd":"step","actions":[slot, …]}  one per request of the last batch
+//   ← {"ok":true,"n","env","seat","who","hint","reward","seq","done","episodes","finished","nnzTotal","aux","bytes"}
+//      payload (little-endian, in this order):
+//        val  f32 × nnzTotal     non-zero observation values, row after row
+//        aux  f32 × n × auxDim   (only when aux is on)
+//        idx  u16 × nnzTotal     their indices
+//        nnz  u16 × n            non-zeros per row
+//        mask u8  × n × numSlots
+//   → {"cmd":"forward","path":"<net.hknet>","obs":"<b64 f32 n×obsDim>"}
+//   ← {"ok":true,"logits":"<b64 f32 n×numSlots>","value":[…]}   the TS forward pass (export parity)
 //   → {"cmd":"close"}
-//   ← {"ok":false,"error":"…"}                         on any failure
+//   ← {"ok":false,"error":"…"}            on any failure
 
 import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { ACTION_SPACE_VERSION, NUM_SLOTS, SLOT_NAMES } from '@/core/nn/hkActions';
 import { ENCODER_VERSION, GLOBAL_DIM, KINDS, NUM_PLANES, OBS_DIM, featureLayout } from '@/core/nn/hkEncode';
-import { DEFAULT_NET_CONFIG, NET_FORMAT, loadHkNet, type HkNetFile } from '@/core/nn/hkNet';
+import { DEFAULT_NET_CONFIG, NET_FORMAT, loadHkNet } from '@/core/nn/hkNet';
 import { AUX_DIM, HkVecEnv, type VecBatch, type VecEnvOptions } from './vec-env';
 
-const b64 = (a: ArrayBufferView) => Buffer.from(a.buffer, a.byteOffset, a.byteLength).toString('base64');
-const f32 = (s: string) => {
-  const b = Buffer.from(s, 'base64');
-  return new Float32Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength));
-};
+const bytesOf = (a: ArrayBufferView) => Buffer.from(a.buffer, a.byteOffset, a.byteLength);
 
-function batchReply(b: VecBatch) {
-  return {
-    ok: true,
-    n: b.env.length,
-    env: b.env,
-    seat: b.seat,
-    who: b.who,
-    obs: b64(b.obs),
-    mask: b64(b.mask),
-    reward: b.reward,
-    aux: b.aux ? b64(b.aux) : null,
-    done: b.done,
-    episodes: b.episodes,
-  };
+function send(header: object, payload: Buffer[] = []): void {
+  const bytes = payload.reduce((a, b) => a + b.length, 0);
+  process.stdout.write(JSON.stringify({ ...header, bytes }) + '\n');
+  for (const p of payload) if (p.length) process.stdout.write(p);
+}
+
+function sendBatch(b: VecBatch): void {
+  send(
+    {
+      ok: true,
+      n: b.n,
+      env: b.env,
+      seat: b.seat,
+      who: b.who,
+      hint: b.hint,
+      reward: b.reward,
+      seq: b.seq,
+      done: b.done,
+      episodes: b.episodes,
+      finished: b.finished,
+      nnzTotal: b.idx.length,
+      aux: !!b.aux,
+    },
+    [bytesOf(b.val), ...(b.aux ? [bytesOf(b.aux)] : []), bytesOf(b.idx), bytesOf(b.nnz), bytesOf(b.mask)],
+  );
 }
 
 let env: HkVecEnv | null = null;
@@ -53,10 +63,10 @@ interface Request {
   obs?: string;
 }
 
-function handle(msg: Request): object {
+function handle(msg: Request): void {
   switch (msg.cmd) {
     case 'spec':
-      return {
+      return send({
         ok: true,
         obsDim: OBS_DIM,
         planes: NUM_PLANES,
@@ -70,18 +80,19 @@ function handle(msg: Request): object {
         actionSpaceVersion: ACTION_SPACE_VERSION,
         netFormat: NET_FORMAT,
         defaultNet: DEFAULT_NET_CONFIG,
-      };
+      });
     case 'reset':
       env = new HkVecEnv(msg.options ?? {});
-      return batchReply(env.reset());
+      return sendBatch(env.reset());
     case 'step':
       if (!env) throw new Error('step before reset');
       if (!Array.isArray(msg.actions)) throw new Error('step needs "actions": number[]');
-      return batchReply(env.step(msg.actions));
+      return sendBatch(env.step(msg.actions));
     case 'forward': {
       if (!msg.path || !msg.obs) throw new Error('forward needs "path" and "obs"');
-      const net = loadHkNet(JSON.parse(readFileSync(msg.path, 'utf8')) as HkNetFile);
-      const obs = f32(msg.obs);
+      const net = loadHkNet(readFileSync(msg.path));
+      const b = Buffer.from(msg.obs, 'base64');
+      const obs = new Float32Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength));
       const n = obs.length / OBS_DIM;
       const logits = new Float32Array(n * NUM_SLOTS);
       const value: number[] = [];
@@ -90,7 +101,7 @@ function handle(msg: Request): object {
         logits.set(out.logits, i * NUM_SLOTS);
         value.push(out.value);
       }
-      return { ok: true, logits: b64(logits), value };
+      return send({ ok: true, logits: bytesOf(logits).toString('base64'), value });
     }
     case 'close':
       process.exit(0);
@@ -99,13 +110,14 @@ function handle(msg: Request): object {
   }
 }
 
+// The learner went away mid-reply: nothing left to do.
+process.stdout.on('error', () => process.exit(0));
+
 createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', (line) => {
   if (!line.trim()) return;
-  let reply: object;
   try {
-    reply = handle(JSON.parse(line) as Request);
+    handle(JSON.parse(line) as Request);
   } catch (e) {
-    reply = { ok: false, error: (e as Error).message };
+    send({ ok: false, error: (e as Error).stack ?? (e as Error).message });
   }
-  process.stdout.write(JSON.stringify(reply) + '\n');
 });

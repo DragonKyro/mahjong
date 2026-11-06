@@ -21,7 +21,7 @@ import type { Action, MatchState } from '../engine';
 import { ACTION_SPACE_VERSION, NUM_SLOTS, SLOT, decodeSlot, legalMask } from './hkActions';
 import { ENCODER_VERSION, GLOBAL_DIM, KINDS, NUM_PLANES, observe } from './hkEncode';
 
-export const NET_FORMAT = 'mahjong/hknet@1';
+export const NET_FORMAT = 'mahjong/hknet@2';
 
 export interface HkNetConfig {
   planes: number;
@@ -35,7 +35,7 @@ export interface HkNetConfig {
   slots: number;
 }
 
-/** The planned size: ~1.6M parameters, ~25M multiply-adds per decision. */
+/** The planned size: 1.83M parameters, ~25M multiply-adds per decision. */
 export const DEFAULT_NET_CONFIG: HkNetConfig = {
   planes: NUM_PLANES,
   globals: GLOBAL_DIM,
@@ -48,37 +48,157 @@ export const DEFAULT_NET_CONFIG: HkNetConfig = {
   slots: NUM_SLOTS,
 };
 
-export interface TensorFile {
+// ------------------------------------------------------------ the file
+//
+// A compact binary file (`.hknet`):
+//   'HKN2' · u32 header length · header JSON (UTF-8) · zero padding to 4 · data
+// The header lists every tensor's shape, storage type and byte offset in the
+// data. Weights are stored as int8 with one float32 scale per output row
+// (w ≈ q × scale, |q| ≤ 127) — a quarter of float32; the network computes in
+// float32 after loading — or as float16 / float32. Biases stay float32.
+
+export type DType = 'i8' | 'f16' | 'f32';
+
+export interface TensorEntry {
   shape: number[];
-  /** Little-endian float32, base64. */
-  data: string;
+  dtype: DType;
+  offset: number;
+  /** i8: byte offset of the float32 per-row scales. */
+  scale?: number;
 }
 
-export interface HkNetFile {
+export interface NetHeader {
   format: typeof NET_FORMAT;
   encoderVersion: number;
   actionSpaceVersion: number;
   config: HkNetConfig;
-  tensors: Record<string, TensorFile>;
   meta?: Record<string, unknown>;
+  tensors: Record<string, TensorEntry>;
 }
 
-export function decodeFloat32(b64: string): Float32Array {
-  const bin = atob(b64);
-  const view = new DataView(new ArrayBuffer(bin.length));
-  for (let i = 0; i < bin.length; i++) view.setUint8(i, bin.charCodeAt(i));
-  const out = new Float32Array(bin.length / 4);
-  for (let i = 0; i < out.length; i++) out[i] = view.getFloat32(i * 4, true);
+const MAGIC = 'HKN2';
+const align4 = (n: number) => (n + 3) & ~3;
+
+/** IEEE half → float. */
+function halfToFloat(h: number): number {
+  const sign = h & 0x8000 ? -1 : 1;
+  const e = (h >> 10) & 0x1f;
+  const f = h & 0x3ff;
+  if (e === 0) return sign * f * 2 ** -24;
+  if (e === 31) return f ? NaN : sign * Infinity;
+  return sign * (1 + f / 1024) * 2 ** (e - 15);
+}
+
+/** Float → IEEE half, round to nearest even. */
+function floatToHalf(x: number): number {
+  const u = new Uint32Array(new Float32Array([x]).buffer)[0]!;
+  const sign = (u >>> 16) & 0x8000;
+  const e = (u >>> 23) & 0xff;
+  let m = u & 0x7fffff;
+  if (e === 255) return sign | 0x7c00 | (m ? 0x200 : 0);
+  let he = e - 127 + 15;
+  if (he >= 31) return sign | 0x7c00;
+  if (he <= 0) {
+    if (he < -10) return sign;
+    m |= 0x800000;
+    const shift = 14 - he;
+    let hm = m >> shift;
+    const rem = m & ((1 << shift) - 1);
+    const half = 1 << (shift - 1);
+    if (rem > half || (rem === half && hm & 1)) hm++;
+    return sign | hm;
+  }
+  let hm = m >> 13;
+  const rem = m & 0x1fff;
+  if (rem > 0x1000 || (rem === 0x1000 && hm & 1)) {
+    hm++;
+    if (hm === 0x400) {
+      hm = 0;
+      he++;
+      if (he >= 31) return sign | 0x7c00;
+    }
+  }
+  return sign | (he << 10) | hm;
+}
+
+/** Write a network file; `weights` is the storage of every tensor with two or more dimensions. */
+export function writeHkNet(
+  head: Omit<NetHeader, 'format' | 'tensors'>,
+  tensors: Record<string, { shape: number[]; data: Float32Array }>,
+  weights: DType = 'i8',
+): Uint8Array {
+  const entries: Record<string, TensorEntry> = {};
+  const chunks: { at: number; bytes: Uint8Array }[] = [];
+  let at = 0;
+  const put = (bytes: Uint8Array) => {
+    const off = at;
+    chunks.push({ at: off, bytes });
+    at = align4(at + bytes.length);
+    return off;
+  };
+  for (const [name, { shape, data }] of Object.entries(tensors)) {
+    const dtype: DType = shape.length >= 2 ? weights : 'f32';
+    if (dtype === 'f32') {
+      entries[name] = { shape, dtype, offset: put(new Uint8Array(Float32Array.from(data).buffer)) };
+    } else if (dtype === 'f16') {
+      const h = new Uint16Array(data.length);
+      data.forEach((x, i) => (h[i] = floatToHalf(x)));
+      entries[name] = { shape, dtype, offset: put(new Uint8Array(h.buffer)) };
+    } else {
+      const rows = shape[0]!;
+      const cols = data.length / rows;
+      const q = new Int8Array(data.length);
+      const scales = new Float32Array(rows);
+      for (let r = 0; r < rows; r++) {
+        let max = 0;
+        for (let c = 0; c < cols; c++) max = Math.max(max, Math.abs(data[r * cols + c]!));
+        const sc = max / 127;
+        scales[r] = sc;
+        for (let c = 0; c < cols; c++) q[r * cols + c] = sc > 0 ? Math.round(data[r * cols + c]! / sc) : 0;
+      }
+      const offset = put(new Uint8Array(q.buffer));
+      entries[name] = { shape, dtype, offset, scale: put(new Uint8Array(scales.buffer)) };
+    }
+  }
+  const header: NetHeader = { format: NET_FORMAT, ...head, tensors: entries };
+  const json = new TextEncoder().encode(JSON.stringify(header));
+  const start = align4(8 + json.length);
+  const out = new Uint8Array(start + at);
+  out.set(new TextEncoder().encode(MAGIC), 0);
+  new DataView(out.buffer).setUint32(4, json.length, true);
+  out.set(json, 8);
+  for (const c of chunks) out.set(c.bytes, start + c.at);
   return out;
 }
 
-export function encodeFloat32(a: Float32Array): string {
-  const view = new DataView(new ArrayBuffer(a.length * 4));
-  a.forEach((x, i) => view.setFloat32(i * 4, x, true));
-  let bin = '';
-  const bytes = new Uint8Array(view.buffer);
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]!);
-  return btoa(bin);
+/** Read a network file: its header and every tensor as float32 (dequantised). */
+export function readHkNet(file: Uint8Array | ArrayBuffer): { header: NetHeader; tensors: Record<string, Float32Array> } {
+  const bytes = file instanceof Uint8Array ? file : new Uint8Array(file);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (new TextDecoder().decode(bytes.subarray(0, 4)) !== MAGIC) throw new Error('not an HK network file');
+  const len = view.getUint32(4, true);
+  const header = JSON.parse(new TextDecoder().decode(bytes.subarray(8, 8 + len))) as NetHeader;
+  if (header.format !== NET_FORMAT) throw new Error(`unknown network format ${String(header.format)}`);
+  const start = align4(8 + len);
+  const tensors: Record<string, Float32Array> = {};
+  for (const [name, t] of Object.entries(header.tensors)) {
+    const size = t.shape.reduce((a, b) => a * b, 1);
+    const base = start + t.offset;
+    const out = new Float32Array(size);
+    if (t.dtype === 'f32') for (let i = 0; i < size; i++) out[i] = view.getFloat32(base + 4 * i, true);
+    else if (t.dtype === 'f16') for (let i = 0; i < size; i++) out[i] = halfToFloat(view.getUint16(base + 2 * i, true));
+    else {
+      const rows = t.shape[0]!;
+      const cols = size / rows;
+      const sbase = start + t.scale!;
+      for (let r = 0; r < rows; r++) {
+        const sc = view.getFloat32(sbase + 4 * r, true);
+        for (let c = 0; c < cols; c++) out[r * cols + c] = view.getInt8(base + r * cols + c) * sc;
+      }
+    }
+    tensors[name] = out;
+  }
+  return { header, tensors };
 }
 
 /** Tensor names and shapes for a config (the PyTorch state_dict keys the runtime reads). */
@@ -184,8 +304,8 @@ export interface HkNet {
   forward(obs: Float32Array): NetOutput;
 }
 
-export function loadHkNet(file: HkNetFile): HkNet {
-  if (file.format !== NET_FORMAT) throw new Error(`not an HK network (${String(file.format)})`);
+export function loadHkNet(bytes: Uint8Array | ArrayBuffer): HkNet {
+  const { header: file, tensors } = readHkNet(bytes);
   if (file.encoderVersion !== ENCODER_VERSION) throw new Error(`network expects encoder v${file.encoderVersion}, this build has v${ENCODER_VERSION}`);
   if (file.actionSpaceVersion !== ACTION_SPACE_VERSION)
     throw new Error(`network expects action space v${file.actionSpaceVersion}, this build has v${ACTION_SPACE_VERSION}`);
@@ -194,10 +314,9 @@ export function loadHkNet(file: HkNetFile): HkNet {
   const W: Record<string, Float32Array> = {};
   for (const [name, shape] of Object.entries(tensorShapes(c))) {
     const t = file.tensors[name];
-    if (!t) throw new Error(`missing tensor ${name}`);
-    const data = decodeFloat32(t.data);
-    const size = shape.reduce((a, b) => a * b, 1);
-    if (t.shape.join() !== shape.join() || data.length !== size) throw new Error(`tensor ${name} should be [${shape.join(', ')}]`);
+    const data = tensors[name];
+    if (!t || !data) throw new Error(`missing tensor ${name}`);
+    if (t.shape.join() !== shape.join()) throw new Error(`tensor ${name} should be [${shape.join(', ')}]`);
     W[name] = data;
   }
   const w = (name: string) => W[name]!;

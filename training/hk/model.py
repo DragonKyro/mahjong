@@ -11,13 +11,15 @@ training-only auxiliary heads that are never exported.
     value = linear(relu(linear(z)))                                expected reward
     aux = linear(z) [207]                                          opponents' hands / ready / waits
 
-`export_net` writes the JSON the TS runtime loads (`loadHkNet`).
+`export_net` writes the compact binary file the TS runtime loads (`loadHkNet`):
+int8 weights with a float32 scale per output row, float32 biases.
 """
 
 from __future__ import annotations
 
-import base64
+import copy
 import json
+import struct
 from dataclasses import asdict, dataclass
 
 import numpy as np
@@ -28,7 +30,8 @@ from torch import nn
 KINDS = 34
 DISCARD0 = 0
 KONG0 = 35
-NET_FORMAT = "mahjong/hknet@1"
+NET_FORMAT = "mahjong/hknet@2"
+MAGIC = b"HKN2"
 
 
 @dataclass
@@ -107,35 +110,122 @@ class HkNet(nn.Module):
 
 
 def masked_logits(logits: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-    return logits.masked_fill(mask == 0, -1e9)
+    """Illegal slots get a large negative logit (finite, so 0 * logp stays 0 in the entropy)."""
+    return logits.float().masked_fill(mask == 0, -1e9)
 
 
-def _b64(t: torch.Tensor) -> str:
-    return base64.b64encode(t.detach().cpu().float().contiguous().numpy().astype("<f4").tobytes()).decode("ascii")
+def _align4(n: int) -> int:
+    return (n + 3) & ~3
 
 
-def export_net(model: HkNet, spec: dict, path: str, meta: dict | None = None) -> None:
-    """Write the network in the TS runtime's format (aux heads left out)."""
-    tensors = {
-        name: {"shape": list(t.shape), "data": _b64(t)}
-        for name, t in model.state_dict().items()
-        if not name.startswith("aux.")
-    }
-    doc = {
+def _quantize_rows(w: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    rows = w.reshape(w.shape[0], -1).astype(np.float32)
+    scale = (np.abs(rows).max(1) / 127).astype(np.float32)
+    safe = np.where(scale > 0, scale, 1)
+    q = np.clip(np.round(rows / safe[:, None]), -127, 127).astype(np.int8)
+    return q, scale
+
+
+def exported_state(model: HkNet) -> dict[str, np.ndarray]:
+    return {k: v.detach().float().cpu().numpy() for k, v in model.state_dict().items() if not k.startswith("aux.")}
+
+
+def export_net(model: HkNet, spec: dict, path: str, weights: str = "i8", meta: dict | None = None) -> int:
+    """Write the network in the TS runtime's binary format; returns the file size in bytes.
+    `weights` ('i8' | 'f16' | 'f32') is the storage of every tensor with 2+ dimensions."""
+    entries, chunks, at = {}, [], 0
+
+    def put(b: bytes) -> int:
+        nonlocal at
+        off = at
+        chunks.append((off, b))
+        at = _align4(at + len(b))
+        return off
+
+    for name, w in exported_state(model).items():
+        dtype = weights if w.ndim >= 2 else "f32"
+        e = {"shape": list(w.shape), "dtype": dtype}
+        if dtype == "f32":
+            e["offset"] = put(w.astype("<f4").tobytes())
+        elif dtype == "f16":
+            e["offset"] = put(w.astype("<f2").tobytes())
+        else:
+            q, scale = _quantize_rows(w)
+            e["offset"] = put(q.tobytes())
+            e["scale"] = put(scale.astype("<f4").tobytes())
+        entries[name] = e
+    header = {
         "format": NET_FORMAT,
         "encoderVersion": spec["encoderVersion"],
         "actionSpaceVersion": spec["actionSpaceVersion"],
         "config": asdict(model.cfg),
-        "tensors": tensors,
         "meta": meta or {},
+        "tensors": entries,
     }
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(doc, f)
+    js = json.dumps(header).encode("utf-8")
+    start = _align4(8 + len(js))
+    buf = bytearray(start + at)
+    buf[0:4] = MAGIC
+    buf[4:8] = struct.pack("<I", len(js))
+    buf[8 : 8 + len(js)] = js
+    for off, b in chunks:
+        buf[start + off : start + off + len(b)] = b
+    with open(path, "wb") as f:
+        f.write(buf)
+    return len(buf)
+
+
+def read_net(path: str) -> tuple[dict, dict[str, torch.Tensor]]:
+    """A network file's header and its tensors as float32 (dequantised) — what the TS runtime computes with."""
+    with open(path, "rb") as f:
+        buf = f.read()
+    if buf[:4] != MAGIC:
+        raise ValueError("not an HK network file")
+    (n,) = struct.unpack("<I", buf[4:8])
+    header = json.loads(buf[8 : 8 + n])
+    start = _align4(8 + n)
+    out = {}
+    for name, t in header["tensors"].items():
+        shape, size = t["shape"], int(np.prod(t["shape"]))
+        base = start + t["offset"]
+        if t["dtype"] == "f32":
+            a = np.frombuffer(buf, "<f4", size, base)
+        elif t["dtype"] == "f16":
+            a = np.frombuffer(buf, "<f2", size, base).astype(np.float32)
+        else:
+            rows = shape[0]
+            q = np.frombuffer(buf, np.int8, size, base).reshape(rows, -1).astype(np.float32)
+            scale = np.frombuffer(buf, "<f4", rows, start + t["scale"])
+            a = q * scale[:, None]
+        out[name] = torch.from_numpy(np.array(a, dtype=np.float32).reshape(shape))
+    return header, out
+
+
+def load_net(path: str, aux_dim: int = 0) -> HkNet:
+    header, tensors = read_net(path)
+    model = HkNet(NetConfig(**header["config"]), aux_dim=aux_dim)
+    model.load_state_dict(tensors, strict=False)
+    return model
+
+
+def quantized_copy(model: HkNet, weights: str = "i8") -> HkNet:
+    """The network as the exported file computes it (weights rounded to int8 / f16)."""
+    q = copy.deepcopy(model)
+    with torch.no_grad():
+        for name, p in q.named_parameters():
+            if p.ndim < 2 or name.startswith("aux."):
+                continue
+            w = p.detach().float().cpu().numpy()
+            if weights == "f16":
+                d = w.astype(np.float16).astype(np.float32)
+            elif weights == "i8":
+                qq, scale = _quantize_rows(w)
+                d = (qq.astype(np.float32) * scale[:, None]).reshape(w.shape)
+            else:
+                d = w
+            p.copy_(torch.from_numpy(d).to(p.device, p.dtype))
+    return q
 
 
 def param_count(model: nn.Module, exported_only: bool = True) -> int:
     return sum(p.numel() for n, p in model.named_parameters() if not (exported_only and n.startswith("aux.")))
-
-
-def decode_f32(s: str, cols: int) -> np.ndarray:
-    return np.frombuffer(base64.b64decode(s), dtype="<f4").reshape(-1, cols)

@@ -62,19 +62,18 @@ npm run build        # → dist/
 
 `VITE_BASE=/ npm run dev` serves from `/` instead of `/mahjong/`. In dev, `?demo=40|claim|end|over|riichi|charleston|lobby` (with `&variant=hk|taiwan|riichi|american`) jumps to a given moment of a match; `?page=train` / `?page=rules` work in any build.
 
-## Neural HK agent (in progress)
+## Neural HK agent
 
-[training/](training/README.md) holds the groundwork for a neural Hong Kong player:
-- a seat-view encoder (201 tile planes × 34 kinds + 946 global features);
-- a 78-slot action space with a legality mask;
-- a 1-D ResNet that runs in the browser (TypeScript) and in PyTorch, with identical outputs;
-- a Node env server for a Python learner.
+[training/](training/README.md) trains a neural Hong Kong player locally: Node workers play matches with the real engine and a PyTorch learner trains on the GPU.
 
-Training hasn't started; the planned scheme is in [training/README.md](training/README.md).
+- **Schedule:** 100 updates imitating the heuristic AI, then PPO self-play against itself and its own past snapshots.
+- **No peeking:** it sees only its own seat's view, never the wall or other hands (tested).
+- **Output:** a 1.85 MB int8 policy file that the TypeScript runtime loads.
 
 ```bash
-npm run train:build                 # bundle the env server
-conda activate train && python -m pytest training/hk -q
+conda activate train
+python -m pytest training/hk -q            # parity and smoke tests
+python training/hk/train.py --name hk1     # 5,000 updates, about 4 hours on an RTX A2000
 ```
 
 **Lockfile.** The lockfile must point at `registry.npmjs.org` or the GitHub Actions build can't install. If your npm is configured with a private mirror, run `npm run fix-lock` after any install that changes `package-lock.json`; it rewrites the mirror URLs (the tarballs and integrity hashes are identical). npm still installs through your mirror locally.
@@ -104,5 +103,6 @@ Suit, wind, 發 / 中 and red-five tile faces are from [FluffyStuff/riichi-mahjo
 - [x] American (with an original house card)
 - [x] Tile-move animations
 - [x] Neural HK agent: encoding, action space, network, env bridge
-- [ ] Neural HK agent: training (behaviour cloning, then PPO self-play) and an in-game "neural" level
+- [x] Neural HK agent: trainer (imitation, then PPO self-play), compact int8 policy files
+- [ ] Neural HK agent: the full training run and an in-game "neural" level
 - [ ] Optional: sound, curated training shapes (兩面 / 嵌張 / 邊張), Riichi uma / oka, a loadable American card

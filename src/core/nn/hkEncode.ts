@@ -20,7 +20,7 @@
 // Layout: [planes: NUM_PLANES × 34 row-major][globals: GLOBAL_DIM].
 
 import { claimOptions, liveLeft, seatWind, blankWinInput, type HandState, type MatchState } from '../engine';
-import { analyzeDiscards, shanten, waits, type ShapeOptions } from '../hand';
+import { analyzeDiscards, shanten, usefulDraws, waits, type ShapeOptions } from '../hand';
 import { BONUS0, DRAGON0, WIND0, kindOf, type Kind } from '../tiles';
 import { getVariant } from '../variants';
 import { FAAN_TABLE, evaluateHk, tablePoints, type HkRules } from '../variants/hk';
@@ -104,7 +104,8 @@ export interface SeatView {
   mask: number[];
 }
 
-export function seatView(s: MatchState, seat: number): SeatView {
+/** `mask`: the seat's legalMask when the caller already has it. */
+export function seatView(s: MatchState, seat: number, mask: Uint8Array = legalMask(s, seat)): SeatView {
   if (s.config.variant !== 'hk') throw new Error('the HK network plays Hong Kong Old Style only');
   const h = s.hand;
   if (h.phase === 'charleston') throw new Error('no Charleston in HK');
@@ -136,9 +137,7 @@ export function seatView(s: MatchState, seat: number): SeatView {
         time: meldTimes[i]![j] ?? now,
       })),
       bonus: p.bonus.map(kindOf),
-      discards: timeline
-        .filter((d) => d.seat === i)
-        .map((d) => ({ kind: kindOf(d.tile), tsumogiri: d.tsumogiri, called: !pond.has(d.tile), time: d.time })),
+      discards: timeline.flatMap((d) => (d.seat === i ? [{ kind: kindOf(d.tile), tsumogiri: d.tsumogiri, called: !pond.has(d.tile), time: d.time }] : [])),
       concealed: p.hand.length,
       played: h.played[i]!,
     });
@@ -170,7 +169,7 @@ export function seatView(s: MatchState, seat: number): SeatView {
       h.phase === 'claim' && h.claim
         ? { kind: h.claim.kind, tile: kindOf(h.claim.tile), from: rel(h.claim.from), asked: claimOptions(s, seat).length > 0 }
         : null,
-    mask: Array.from(legalMask(s, seat)),
+    mask: Array.from(mask),
   };
 }
 
@@ -483,7 +482,7 @@ export function encode(v: SeatView): Float32Array {
       setG(GL.bestRonPoints, bestRonPts / maxPts);
     } else {
       const x = mine.slice();
-      for (let k = 0; k < KINDS; k++) {
+      for (const k of usefulDraws(mine, sets, opts)) {
         if (x[k]! >= 4) continue;
         x[k]!++;
         if (shanten(x, sets, opts) < sh) setP(PL.improve, k, 1);
@@ -618,6 +617,6 @@ export function encode(v: SeatView): Float32Array {
 }
 
 /** seatView + encode. */
-export function observe(s: MatchState, seat: number): Float32Array {
-  return encode(seatView(s, seat));
+export function observe(s: MatchState, seat: number, mask?: Uint8Array): Float32Array {
+  return encode(seatView(s, seat, mask));
 }

@@ -1,4 +1,4 @@
-"""Checks that the Python side matches the TS side (no training here).
+"""Checks that the Python side matches the TS side.
 
     conda activate train
     npm run train:build
@@ -15,7 +15,8 @@ import pytest
 import torch
 
 from env_client import EnvClient
-from model import HkNet, NetConfig, export_net, masked_logits, param_count
+from model import HkNet, NetConfig, export_net, load_net, masked_logits, param_count, quantized_copy, read_net
+import train
 
 
 @pytest.fixture(scope="module")
@@ -24,56 +25,89 @@ def env():
         yield e
 
 
+def small(spec, **over):
+    return NetConfig.from_spec(spec, channels=32, blocks=2, neck=8, globalHidden=32, hidden=64, valueHidden=16, **over)
+
+
 def test_spec_matches_the_model(env):
     spec = env.spec
     assert spec["obsDim"] == spec["planes"] * spec["kinds"] + spec["globalDim"]
     assert len(spec["slotNames"]) == spec["numSlots"] == 78
-    assert len(spec["featureLayout"]["planes"]) == spec["planes"]
-    assert len(spec["featureLayout"]["globals"]) == spec["globalDim"]
     model = HkNet(NetConfig.from_spec(spec), aux_dim=spec["auxDim"])
     logits, value, aux = model(torch.zeros(2, spec["obsDim"]))
     assert logits.shape == (2, 78) and value.shape == (2,) and aux.shape == (2, spec["auxDim"])
     print(f"\nexported parameters: {param_count(model):,}")
 
 
-def test_ts_and_torch_agree(env):
-    """Random weights (residual branches included), real observations: the TS forward pass equals PyTorch's."""
+def test_sparse_batches_rebuild_the_observations(env):
+    b = env.reset(numEnvs=6, seed=1, seats=["a", "b", "c", "d"], aux=True)
+    x = b.dense(env.spec["obsDim"])
+    assert x.shape == (b.n, env.spec["obsDim"]) and b.aux.shape == (b.n, env.spec["auxDim"])
+    assert (b.mask.sum(1) >= 2).all()
+    assert 0.01 < (x != 0).mean() < 0.2
+
+
+@pytest.mark.parametrize("weights", ["f32", "i8"])
+def test_ts_and_torch_agree(env, weights):
+    """Random weights, real observations: the TS forward pass on the exported file equals PyTorch's on the same (dequantised) weights."""
     spec = env.spec
     torch.manual_seed(0)
-    model = HkNet(NetConfig.from_spec(spec, channels=32, blocks=2, neck=8, globalHidden=32, hidden=64, valueHidden=16))
+    model = HkNet(small(spec))
     with torch.no_grad():
         for p in model.parameters():
             p.normal_(0, 0.05)
-    batch = env.reset(numEnvs=8, seed=3, seats=["learner", "normal", "learner", "normal"])
-    obs = batch.obs
+    b = env.reset(numEnvs=8, seed=3, seats=["learner", "normal", "learner", "normal"])
+    obs = b.dense(spec["obsDim"])
     with tempfile.TemporaryDirectory() as d:
-        path = os.path.join(d, "net.json")
-        export_net(model, spec, path)
+        path = os.path.join(d, "net.hknet")
+        size = export_net(model, spec, path, weights)
         ts_logits, ts_value = env.ts_forward(path, obs)
+        header, _ = read_net(path)
+        as_file = load_net(path)
+    assert header["format"] == "mahjong/hknet@2"
     with torch.no_grad():
-        logits, value, _ = model(torch.from_numpy(obs.copy()))
+        logits, value, _ = as_file(torch.from_numpy(obs))
     np.testing.assert_allclose(ts_logits, logits.numpy(), rtol=1e-4, atol=1e-4)
     np.testing.assert_allclose(ts_value, value.numpy(), rtol=1e-4, atol=1e-4)
+    if weights == "i8":
+        assert size < 0.3 * param_count(model) * 4 + 8192
 
 
-def test_rollout_with_the_untrained_net(env):
-    """Masked sampling from the initial policy plays legal moves until matches finish."""
+def test_int8_file_plays_like_the_float_network(env):
     spec = env.spec
-    model = HkNet(NetConfig.from_spec(spec, channels=16, blocks=1, hidden=64), aux_dim=spec["auxDim"])
-    batch = env.reset(numEnvs=8, seed=5, seats=["learner", "normal", "normal", "normal"], aux=True)
-    rng = np.random.default_rng(0)
-    episodes = []
-    for _ in range(3000):
-        assert batch.mask.sum(1).min() >= 2  # forced moves are auto-played
-        assert batch.aux is not None and batch.aux.shape == (len(batch.env), spec["auxDim"])
-        with torch.no_grad():
-            logits, _, _ = model(torch.from_numpy(batch.obs.copy()))
-            probs = torch.softmax(masked_logits(logits, torch.from_numpy(batch.mask.copy())), -1).numpy()
-        actions = [rng.choice(len(p), p=p / p.sum()) for p in probs]
-        batch = env.step(actions)
-        episodes += batch.episodes
-        if len(episodes) >= 2:
-            break
-    assert len(episodes) >= 2
-    for ep in episodes:
-        assert sum(ep["scores"]) == 4 * 500 and ep["hands"] >= 4
+    torch.manual_seed(1)
+    model = HkNet(NetConfig.from_spec(spec)).eval()
+    with torch.no_grad():
+        for p in model.parameters():
+            p.normal_(0, 0.03)
+    b = env.reset(numEnvs=32, seed=4, seats=["a", "b", "c", "d"])
+    obs = torch.from_numpy(b.dense(spec["obsDim"]))
+    mask = torch.from_numpy(b.mask.copy())
+    q = quantized_copy(model, "i8")
+    with torch.no_grad():
+        a = masked_logits(model(obs)[0], mask)
+        c = masked_logits(q(obs)[0], mask)
+    assert (a.argmax(-1) == c.argmax(-1)).float().mean() > 0.95
+
+
+def test_training_smoke(tmp_path):
+    """Two imitation updates, two self-play updates (with an evaluation and an export): the whole loop runs."""
+    if not torch.cuda.is_available():
+        pytest.skip("needs the GPU")
+    args = train.parse_args(
+        [
+            "--name", "smoke", "--out", str(tmp_path), "--no-build",
+            "--updates", "4", "--bc-updates", "2", "--workers", "3", "--envs", "8", "--groups", "2",
+            "--samples", "1024", "--minibatch", "512", "--epochs", "2",
+            "--eval-every", "4", "--eval-matches", "2", "--export-every", "2", "--ckpt-every", "2",
+            "--channels", "32", "--blocks", "2", "--hidden", "64",
+        ]
+    )
+    t = train.Trainer(args)
+    t.run()
+    run = tmp_path / "smoke"
+    lines = (run / "metrics.jsonl").read_text().strip().splitlines()
+    assert len(lines) == 4
+    assert (run / "policies" / "update_00004.hknet").exists()
+    assert (run / "ckpt" / "latest.pt").exists()
+    assert len((run / "evals.jsonl").read_text().strip().splitlines()) == 2
