@@ -14,7 +14,13 @@ python -m pytest training/hk -q                # TS ↔ PyTorch parity, int8 exp
 
 python training/hk/train.py --name hk1                  # 5,000 updates: 100 imitation + 4,900 self-play
 python training/hk/train.py --resume training/runs/hk1  # carry on after a stop (Ctrl-C saves a checkpoint)
+
+# Head-to-head on fresh deals, with a standard error (256 matches ≈ ±9 points per match):
+python training/hk/evaluate.py training/runs/hk1/policies/update_05000.hknet heuristic
+python training/hk/evaluate.py training/runs/hk1/policies/update_05000.hknet training/runs/hk1/policies/update_01100.hknet
 ```
+
+The in-training evaluations (64 matches, always the same 32 deals) swing by ±12–20 points per match. Judge checkpoints with `evaluate.py`, and include head-to-heads against past checkpoints: gains against one fixed opponent don't always carry over to others.
 
 Running `envs/train/python.exe` without activating the env leaves `Library/bin` off PATH. cuDNN then fails to load (`Cannot load symbol cudnnGetVersion`).
 

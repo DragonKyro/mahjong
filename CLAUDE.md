@@ -32,7 +32,7 @@ src/store/           gameStore (match + AI driver), netStore (rooms), trainingSt
 src/ui/              App, Home, RulesForms (per-variant editors), Table, TablePanels, Lobby, Training, RulesPage (tab per variant), Tile, flip.ts (move animation), styles.css, devDemo (dev only)
 scripts/             fix-lockfile.mjs, merge-db-rules.mjs
 training/            vite.config.ts (bundles → training/dist), environment.yml (conda `train`), README.md (fair play, schedule, speed)
-  hk/                vec-env.ts (+ test) + env-server.ts (Node; JSON header + binary sparse payload), model.py (PyTorch twin of hkNet + aux heads, export_net / read_net), env_client.py, train.py (imitation → PPO self-play), test_model.py
+  hk/                vec-env.ts (+ test) + env-server.ts (Node; JSON header + binary sparse payload), model.py (PyTorch twin of hkNet + aux heads, export_net / read_net), env_client.py, train.py (imitation → PPO self-play), evaluate.py (head-to-head on fresh deals, ± SE), test_model.py
 ```
 
 Path alias: `@/` → `src/`.
