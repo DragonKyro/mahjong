@@ -110,7 +110,7 @@ def test_training_smoke(tmp_path):
             "--name", "smoke", "--out", str(tmp_path), "--no-build",
             "--updates", "4", "--bc-updates", "2", "--workers", "3", "--envs", "8", "--groups", "2",
             "--samples", "1024", "--minibatch", "512", "--epochs", "2",
-            "--eval-every", "4", "--eval-matches", "2", "--export-every", "2", "--ckpt-every", "2",
+            "--eval-every", "4", "--eval-matches", "2", "--ref-matches", "4", "--export-every", "2", "--ckpt-every", "2",
             "--channels", "32", "--blocks", "2", "--hidden", "64",
         ]
     )
@@ -127,7 +127,11 @@ def test_training_smoke(tmp_path):
     assert all("danger_ron_loss" in m for m in ppo)
     assert (run / "policies" / "update_00004_ema.hknet").exists()
     evals = [json.loads(l) for l in (run / "evals.jsonl").read_text().strip().splitlines()]
-    assert sorted(e["vs"] for e in evals) == ["bc", "ema", "heuristic"]
+    assert sorted(e["vs"] for e in evals) == ["bc", "ema", "heuristic", "ref"]
+    ref = next(e for e in evals if e["vs"] == "ref")
+    assert ref["update"] == 4 and "se" in ref and "hard.hknet" in ref["ref"]
+    progress = (run / "progress.md").read_text(encoding="utf-8")
+    assert "Against the current hard level" in progress and progress.index("current hard level") < progress.index("heuristic AI (normal)")
     ck = torch.load(run / "ckpt" / "latest.pt", map_location="cpu", weights_only=False)
     assert ck["ema"] is not None
 

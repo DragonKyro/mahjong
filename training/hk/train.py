@@ -27,6 +27,7 @@ import json
 import math
 import os
 import random
+import shutil
 import sys
 import threading
 import time
@@ -39,7 +40,7 @@ import torch.nn.functional as F
 
 sys.path.insert(0, os.path.dirname(__file__))
 from env_client import ROOT, EnvClient, build_bundle  # noqa: E402
-from model import HkNet, NetConfig, adapt_state, export_net, masked_logits, param_count, quantized_copy  # noqa: E402
+from model import HkNet, NetConfig, adapt_state, export_net, masked_logits, param_count, quantized_copy, read_net  # noqa: E402
 
 # ------------------------------------------------------------ options
 
@@ -85,6 +86,9 @@ def parse_args(argv=None):
     p.add_argument("--eval-every", type=int, default=100, help="0 = never (evaluation is measurement only)")
     p.add_argument("--progress-every", type=int, default=100, help="rewrite progress.md this often (and after each evaluation)")
     p.add_argument("--eval-matches", type=int, default=64)
+    p.add_argument("--ref-net", default=os.path.join(ROOT, "public", "policies", "hk", "hard.hknet"),
+                   help="the benchmark: a network file the current one plays every --eval-every updates ('' = off); default the shipped hard level")
+    p.add_argument("--ref-matches", type=int, default=256, help="paired matches per benchmark (256 ≈ ±7 points per match)")
     p.add_argument("--export-every", type=int, default=100)
     p.add_argument("--ckpt-every", type=int, default=50)
     p.add_argument("--precision", choices=["bf16", "fp16", "tf32"], default="bf16")
@@ -444,6 +448,11 @@ class Trainer:
         self.workers: list[Worker] = []
         self.evals: list[dict] = []
         self.eval_nets: dict[str, tuple] = {}
+        # The benchmark opponent (the shipped hard level by default), with its own config.
+        self.ref: tuple[NetConfig, dict, str] | None = None
+        if args.ref_net:
+            header, tensors = read_net(args.ref_net)
+            self.ref = (NetConfig(**header["config"]), tensors, f"{os.path.basename(args.ref_net)} (update {header.get('meta', {}).get('update', '?')})")
         self.phase = None
         self.match_seed = args.seed * 7919 + self.update * 104729
         self.stats = defaultdict(float)
@@ -809,28 +818,33 @@ class Trainer:
     def start_eval(self, kind: str) -> None:
         """'heuristic': the current network vs the heuristic AI; 'bc': vs the update-100 imitation
         snapshot; 'bc_heuristic': that snapshot vs the heuristic (the starting point, run once);
-        'ema': the averaged weights vs the current network."""
+        'ema': the averaged weights vs the current network; 'ref': the current network vs the
+        benchmark network (--ref-net, the shipped hard level), --ref-matches paired matches."""
         if kind in ("bc", "bc_heuristic") and self.bc_state is None:
+            return
+        if kind == "ref" and self.ref is None:
             return
         if any(e["kind"] == kind for e in self.evals):
             return  # the previous one is still playing
         w = Worker(1000 + len(self.evals), "eval")
         # One pair of acting copies per kind of evaluation, reused (their CUDA graphs too).
         if kind not in self.eval_nets:
+            opp_cfg = self.ref[0] if kind == "ref" else self.cfg
             self.eval_nets[kind] = (
                 Inference(self.cfg, self.device, self.prec.store),
-                Inference(self.cfg, self.device, self.prec.store) if kind in ("bc", "ema") else None,
+                Inference(opp_cfg, self.device, self.prec.store) if kind in ("bc", "ema", "ref") else None,
             )
         w.net, w.opponent = self.eval_nets[kind]
         w.net.load(self.bc_state if kind == "bc_heuristic" else self.ema if kind == "ema" else self.model.state_dict())
         if w.opponent is not None:
-            w.opponent.load(self.model.state_dict() if kind == "ema" else self.bc_state)
-        seats = [LEARNER, BC_OPP if kind in ("bc", "ema") else "normal"] * 2
-        n = self.args.eval_matches
+            w.opponent.load({"ema": self.model.state_dict(), "ref": self.ref[1] if self.ref else {}}.get(kind, self.bc_state))
+        seats = [LEARNER, BC_OPP if kind in ("bc", "ema", "ref") else "normal"] * 2
+        n = self.args.ref_matches if kind == "ref" else self.args.eval_matches
         # maxActions: two weak players can draw hand after hand (the dealer keeps the deal on a draw).
-        w.reset(numEnvs=min(n, 32), seed=777, seats=seats, schedule="paired", maxMatches=n, rewardScale=1, aux=False, maxActions=4000)
+        # The same deals every time (seed 777), so successive results compare like with like.
+        w.reset(numEnvs=min(n, 64), seed=777, seats=seats, schedule="paired", maxMatches=n, rewardScale=1, aux=False, maxActions=4000)
         update = self.args.bc_updates if kind == "bc_heuristic" else self.trained
-        vs = {"bc": "bc", "ema": "ema"}.get(kind, "heuristic")
+        vs = {"bc": "bc", "ema": "ema", "ref": "ref"}.get(kind, "heuristic")
         self.evals.append({"worker": w, "kind": kind, "vs": vs, "update": update, "episodes": [], "t0": time.time()})
 
     def _service_evals(self) -> None:
@@ -875,6 +889,13 @@ class Trainer:
                     x[k] += ep["stats"][seat].get(k, 0)
         n = max(1, len(eps))
         net, opp = side
+        # Standard error from the spread over seed pairs (each deal is played twice, seats swapped).
+        pairs: dict[int, float] = {}
+        for ep in eps:
+            d = sum((1 if who == LEARNER else -1) * (ep["scores"][seat] - 500) for seat, who in enumerate(ep["who"]))
+            pairs[ep["seed"]] = pairs.get(ep["seed"], 0.0) + d
+        per = np.array(list(pairs.values())) / 2
+        se = float(per.std(ddof=1) / math.sqrt(len(per))) if len(per) > 1 else float("nan")
         rec = {
             "update": e["update"],
             "vs": e["vs"],
@@ -882,6 +903,7 @@ class Trainer:
             "hands": hands,
             # The bottom line: the network's two seats minus the opponents' two, per match.
             "points_per_match": (net["points"] - opp["points"]) / n,
+            "se": se,
             "net": net,
             "opp": opp,
             # (older fields, kept for earlier rows)
@@ -891,6 +913,9 @@ class Trainer:
             "truncated": sum(1 for ep in eps if ep["truncated"]),
             "seconds": round(time.time() - e["t0"], 1),
         }
+        if e["vs"] == "ref":
+            rec["ref"] = self.ref[2] if self.ref else None
+            self._keep_best(rec)
         with open(os.path.join(self.run_dir, "evals.jsonl"), "a") as f:
             f.write(json.dumps(rec) + "\n")
         self.write_progress()
@@ -900,6 +925,16 @@ class Trainer:
             f"points per win {net['wonPoints'] / max(1, net['wins']):.1f} vs {opp['wonPoints'] / max(1, opp['wins']):.1f}"
         )
         e["worker"].close()
+
+    def _keep_best(self, rec: dict) -> None:
+        """policies/best.hknet = the exported snapshot with the best benchmark result so far."""
+        path = os.path.join(self.run_dir, "evals.jsonl")
+        seen = [json.loads(l) for l in open(path, encoding="utf-8")] if os.path.exists(path) else []
+        best = max((e["points_per_match"] for e in seen if e["vs"] == "ref" and e["update"] > 0), default=-math.inf)
+        src = os.path.join(self.run_dir, "policies", f"update_{rec['update']:05d}.hknet")
+        if rec["update"] > 0 and rec["points_per_match"] > best and os.path.exists(src):
+            shutil.copyfile(src, os.path.join(self.run_dir, "policies", "best.hknet"))
+            rec["best"] = True
 
     # ---- progress.md (rebuilt from metrics.jsonl and evals.jsonl, so it survives resumes)
     def write_progress(self) -> None:
@@ -929,15 +964,14 @@ class Trainer:
             f"Updated {time.strftime('%Y-%m-%d %H:%M')} · **update {last:,} / {a.updates:,}** ({100 * last / a.updates:.0f}%) · {phase} · "
             f"{elapsed / 3600:.1f} h so far · ~{per:.1f} s / update · **ETA {per * (a.updates - last) / 3600:.1f} h**",
             "",
-            f"Updates 1–{a.bc_updates} imitate the heuristic AI; after that the network trains only against itself and its own past snapshots. "
-            "The evaluations below are measurement only — they never feed training.",
+            (f"Warm start from `{self.init_source['from']}` (update {self.init_source['update']}); self-play only. "
+             if self.init_source else
+             f"Updates 1–{a.bc_updates} imitate the heuristic AI; after that the network trains only against itself and its own past snapshots. ")
+            + "The evaluations below are measurement only — they never feed training.",
             "",
         ]
         heur = sorted((e for e in evals if e["vs"] == "heuristic"), key=lambda e: e["update"])
-        if heur:
-            e = max(heur, key=lambda e: e["update"])
-            verdict = "ahead of" if e["points_per_match"] > 0 else "behind"
-            out += [f"**Latest vs the heuristic AI (update {e['update']}): {e['points_per_match']:+.1f} points per match — {verdict} it.**", ""]
+        heur = sorted((e for e in evals if e["vs"] == "heuristic"), key=lambda e: e["update"])
 
         def pair(e, f, fmt="{:.1f}"):
             """'network / opponent' for one measure (– where an early row didn't record it)."""
@@ -967,17 +1001,53 @@ class Trainer:
                     win = f"{100 * e['wins'][0] / h:.1f} / {100 * e['wins'][1] / h:.1f}"
                     deal = f"{100 * e['deal_ins'][0] / h:.1f} / {100 * e['deal_ins'][1] / h:.1f}"
                     faan = f"{e['avg_win_faan']:.1f} / –"
+                se = e.get("se")
+                ppm = f"{e['points_per_match']:+.1f}" + (f" ± {se:.1f}" if isinstance(se, (int, float)) and se == se else "")
                 t.append(
-                    f"| {e['update']} | **{e['points_per_match']:+.1f}** | {pair(e, lambda x, e: x['points'] / h, '{:+.1f}')} | {win} | "
+                    f"| {e['update']} | **{ppm}** | {pair(e, lambda x, e: x['points'] / h, '{:+.1f}')} | {win} | "
                     f"{pair(e, lambda x, e: x['wonPoints'] / x['wins'])} | {faan} | {pair(e, lambda x, e: 100 * x['bigWins'] / x['wins'], '{:.0f}')} | "
                     f"{deal} | {pair(e, lambda x, e: x['dealInPoints'] / x['dealIns'])} | {pair(e, lambda x, e: x['paidPoints'] / h)} |"
                 )
             return t
 
+        ref = sorted((e for e in evals if e["vs"] == "ref"), key=lambda e: e["update"])
+        if ref:
+            last_r = ref[-1]
+            scored = [e for e in ref if e["update"] > 0]
+            best = max(scored, key=lambda e: e["points_per_match"]) if scored else None
+            name = last_r.get("ref") or "the reference network"
+
+            def pm(e):
+                se = e.get("se")
+                return f"{e['points_per_match']:+.1f} ± {se:.1f}" if isinstance(se, (int, float)) and se == se else f"{e['points_per_match']:+.1f}"
+
+            verdict = "ahead of" if last_r["points_per_match"] > 0 else "behind"
+            out += [f"## Against the current hard level ({name})", ""]
+            out += [f"**Latest (update {last_r['update']}): {pm(last_r)} points per match — {verdict} it.**"]
+            if best:
+                out += [f"Best so far: update {best['update']}, {pm(best)} (saved as `policies/best.hknet`)."]
+            if len(scored) >= 4:
+                # The trend: the last few benchmarks against the first few (each is ±SE; a few together are steadier).
+                k = min(5, len(scored) // 2)
+                early = sum(e["points_per_match"] for e in scored[:k]) / k
+                late = sum(e["points_per_match"] for e in scored[-k:]) / k
+                out += [f"Trend: the last {k} benchmarks average {late:+.1f}, the first {k} averaged {early:+.1f} "
+                        f"({'improving' if late > early else 'not improving'}; a difference under ~{2 * 7 / k ** 0.5:.0f} is within noise)."]
+            out += [
+                "",
+                f"{a.ref_matches} paired matches each (every deal twice, seats swapped; the same deals every time, so rows compare like with like). "
+                "Both sides play greedily, two seats each. **Points per match = this network's seats minus the hard level's** — the measure "
+                "of progress: above 0 means it would play stronger than the level the game ships. ± is one standard error (≈95% within ±2). "
+                "Update 0 is the starting network itself (≈ 0 by construction). Cells read **this network / hard level**.",
+                "",
+            ]
+            out += eval_table(ref, "hard")
+            out += [""]
         n_eval = a.eval_matches
         out += [
             "## Against the heuristic AI (normal)",
             "",
+            *([f"Latest (update {heur[-1]['update']}): {heur[-1]['points_per_match']:+.1f} points per match.", ""] if heur else []),
             f"{n_eval} paired-seed matches each (every deal played twice with the seats swapped), the network playing greedily in two seats. "
             "Cells read **network / opponent**, each side being its two seats together.",
             "",
@@ -1066,6 +1136,9 @@ class Trainer:
             if self.update > a.bc_updates and not any(e["update"] == self.update for e in seen):
                 self.start_eval("heuristic")
                 self.start_eval("bc")
+                self.start_eval("ref")
+            if self.init_source and self.update == 0 and not any(e["vs"] == "ref" and e["update"] == 0 for e in seen):
+                self.start_eval("ref")  # the starting network: it should sit at about 0
         while self.update < a.updates:
             self.update += 1
             if self.update == a.bc_updates + 1 and self.phase == "bc":
@@ -1144,6 +1217,7 @@ class Trainer:
                 self.start_eval("bc")
             if self.ema is not None:
                 self.start_eval("ema")
+            self.start_eval("ref")
         if u % a.export_every == 0 or u == a.updates:
             probe = torch.from_numpy(np.flatnonzero(job.buf.complete[: job.buf.n])[:2048]).to(self.device)
             rec["export"] = self.export(f"update_{u:05d}", job.buf.obs[probe], job.buf.mask[probe])
