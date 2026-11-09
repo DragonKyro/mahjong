@@ -204,3 +204,25 @@ def test_warm_start_from_a_run_without_a_danger_head(tmp_path):
     assert m[0]["phase"] == "ppo" and "danger_ron_loss" in m[0]
     assert json.loads((tmp_path / "dst" / "config.json").read_text())["init"]["update"] == 2
 
+
+
+def test_inference_without_a_graph_matches_the_graph():
+    """When the GPU is busy (the training thread), Inference runs the batch eagerly instead of capturing: same answers."""
+    if not torch.cuda.is_available():
+        pytest.skip("needs the GPU")
+    spec = {"defaultNet": dict(planes=201, globals=946, channels=16, blocks=1, neck=4, globalHidden=16, hidden=32, valueHidden=8, slots=78, danger=8)}
+    torch.manual_seed(5)
+    m = HkNet(NetConfig.from_spec(spec))
+    with torch.no_grad():
+        for p in m.parameters():
+            p.normal_(0, 0.05)
+    busy = {"on": True}
+    inf = train.Inference(m.cfg, torch.device("cuda"), torch.bfloat16, m.state_dict(), can_capture=lambda: not busy["on"])
+    x = (torch.rand(40, 201 * 34 + 946, device="cuda") < 0.06).to(torch.bfloat16)
+    eager = inf(x)
+    assert not inf.graphs  # nothing was captured while busy
+    busy["on"] = False
+    graphed = inf(x)
+    assert 64 in inf.graphs
+    torch.testing.assert_close(eager[0], graphed[0], atol=2e-2, rtol=2e-2)
+    torch.testing.assert_close(eager[1], graphed[1], atol=2e-2, rtol=2e-2)

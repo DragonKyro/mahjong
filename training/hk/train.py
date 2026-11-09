@@ -146,14 +146,27 @@ class Inference:
 
     BUCKETS = (64, 128, 256, 512, 1024, 2048, 4096)
 
-    def __init__(self, cfg: NetConfig, device, dtype, state: dict | None = None):
+    def __init__(self, cfg: NetConfig, device, dtype, state: dict | None = None, can_capture=lambda: True):
         self.net = HkNet(cfg).to(device=device, dtype=dtype).eval()
         for p in self.net.parameters():
             p.requires_grad_(False)
         self.device, self.dtype = device, dtype
         self.graphs: dict[int, dict] = {}
+        # A graph capture fails if another thread uses the GPU meanwhile (the training thread
+        # does, most of the time): only capture when this says it's quiet; run eagerly otherwise.
+        self.can_capture = can_capture
         if state is not None:
             self.load(state)
+
+    def prepare(self, upto: int) -> None:
+        """Capture the buckets up to `upto` rows now (call it while the GPU is quiet)."""
+        if self.device.type != "cuda":
+            return
+        for b in self.BUCKETS:
+            if b > upto and b != self.BUCKETS[0]:
+                break
+            if b not in self.graphs:
+                self._capture(b)
 
     def load(self, state: dict) -> None:
         """Copy weights in place (the captured graphs keep pointing at the same tensors)."""
@@ -184,7 +197,13 @@ class Inference:
             with torch.no_grad():
                 logits, value, _ = self.net(obs.to(self.dtype))
             return logits.float(), value.float()
-        g = self.graphs.get(size) or self._capture(size)
+        g = self.graphs.get(size)
+        if g is None:
+            if not self.can_capture():
+                with torch.no_grad():
+                    logits, value, _ = self.net(obs.to(self.dtype))
+                return logits.float(), value.float()
+            g = self._capture(size)
         g["x"][:n].copy_(obs)
         g["graph"].replay()
         return g["logits"][:n].float(), g["value"][:n].float()
@@ -459,10 +478,14 @@ class Trainer:
         self.timing = defaultdict(float)
         self.opponent: Inference | None = None
         self.opponent_update = -1
-        self.infer = Inference(self.cfg, self.device, self.prec.store, self.model.state_dict())
+        self.infer = Inference(self.cfg, self.device, self.prec.store, self.model.state_dict(), can_capture=self.gpu_quiet)
         with open(os.path.join(self.run_dir, "config.json"), "w") as f:
             json.dump({"args": vars(args), "init": self.init_source, "net": asdict(self.cfg), "spec": {k: self.spec[k] for k in ["obsDim", "numSlots", "auxDim", "encoderVersion", "actionSpaceVersion"]}}, f, indent=1)
         print(f"run {self.run_dir}\nnet {param_count(self.model):,} parameters, device {self.device}, {args.precision}")
+
+    def gpu_quiet(self) -> bool:
+        """No training thread is using the GPU (a CUDA graph can be captured)."""
+        return self.job is None or not self.job.is_alive()
 
     @property
     def buf(self) -> Buffer:
@@ -593,7 +616,7 @@ class Trainer:
         """This update's past self (one snapshot for every pool worker, so they share a GPU pass)."""
         self.opponent_update, sd = self.rng.choice(self.pool)
         if self.opponent is None:
-            self.opponent = Inference(self.cfg, self.device, self.prec.store)
+            self.opponent = Inference(self.cfg, self.device, self.prec.store, can_capture=self.gpu_quiet)
         self.opponent.load(sd)
 
     # ---- acting
@@ -831,9 +854,13 @@ class Trainer:
         if kind not in self.eval_nets:
             opp_cfg = self.ref[0] if kind == "ref" else self.cfg
             self.eval_nets[kind] = (
-                Inference(self.cfg, self.device, self.prec.store),
-                Inference(opp_cfg, self.device, self.prec.store) if kind in ("bc", "ema", "ref") else None,
+                Inference(self.cfg, self.device, self.prec.store, can_capture=self.gpu_quiet),
+                Inference(opp_cfg, self.device, self.prec.store, can_capture=self.gpu_quiet) if kind in ("bc", "ema", "ref") else None,
             )
+            # start_eval runs between updates (no training thread): capture the batch sizes evaluations use now.
+            for net in self.eval_nets[kind]:
+                if net is not None and self.gpu_quiet():
+                    net.prepare(4 * min(self.args.ref_matches if kind == "ref" else self.args.eval_matches, 64))
         w.net, w.opponent = self.eval_nets[kind]
         w.net.load(self.bc_state if kind == "bc_heuristic" else self.ema if kind == "ema" else self.model.state_dict())
         if w.opponent is not None:
