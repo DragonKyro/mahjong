@@ -52,13 +52,13 @@ def parse_args(argv=None):
     p.add_argument("--updates", type=int, default=5000)
     p.add_argument("--bc-updates", type=int, default=100, help="imitation updates at the start")
     p.add_argument("--workers", type=int, default=max(2, min(16, (os.cpu_count() or 8) - 4)))
-    p.add_argument("--envs", type=int, default=48, help="matches per worker")
+    p.add_argument("--envs", type=int, default=64, help="matches per worker (a multiple of --deal-copies)")
     p.add_argument("--groups", type=int, default=4, help="workers are served in this many groups (overlaps GPU and env time)")
-    p.add_argument("--samples", type=int, default=16384, help="learner decisions per update")
+    p.add_argument("--samples", type=int, default=65536, help="learner decisions per update (hk1 used 16384)")
     p.add_argument("--epochs", type=int, default=3)
     p.add_argument("--minibatch", type=int, default=4096)
     p.add_argument("--lr", type=float, default=3e-4)
-    p.add_argument("--lr-final", type=float, default=3e-5)
+    p.add_argument("--lr-final", type=float, default=1e-4, help="cosine floor (hk1 used 3e-5 and froze late: KL ~0.001)")
     p.add_argument("--bc-lr", type=float, default=5e-4)
     p.add_argument("--clip", type=float, default=0.2)
     p.add_argument("--target-kl", type=float, default=0.03, help="stop an update's epochs early past 1.5x this")
@@ -67,6 +67,10 @@ def parse_args(argv=None):
     p.add_argument("--ent-final", type=float, default=0.002)
     p.add_argument("--aux-coef", type=float, default=0.1)
     p.add_argument("--gamma", type=float, default=1.0)
+    p.add_argument("--deal-copies", type=int, default=4, help="self-play: play every hand this many times from the same state (1 = off)")
+    p.add_argument("--deal-beta", type=float, default=0.5,
+                   help="weight of the deal-baseline advantage (hand reward minus the other copies' mean) against GAE")
+    p.add_argument("--ema", type=float, default=0.99, help="per-update decay of the averaged weights exported as *_ema.hknet (0 = off)")
     p.add_argument("--lam", type=float, default=0.95)
     p.add_argument("--max-grad", type=float, default=1.0)
     p.add_argument("--reward-scale", type=float, default=32.0, help="points per unit of reward")
@@ -199,9 +203,13 @@ class Buffer:
         self.done = np.zeros(cap, bool)
         self.complete = np.zeros(cap, bool)
         self.succ = np.full(cap, -1, np.int64)
+        # Deal copies: the return minus the deal's baseline, for decisions whose hand was replayed.
+        self.deal_adv = np.zeros(cap, np.float32)
+        self.has_deal = np.zeros(cap, bool)
         self.n = 0
         self.n_complete = 0
         self.open: dict[tuple, int] = {}  # stream (worker, env, seat) -> its newest decision
+        self.episode: dict[tuple, list[int]] = {}  # stream -> this episode's decisions in this buffer
 
     def add(self, streams, obs, mask, aux, action, logp, value) -> np.ndarray:
         k = len(streams)
@@ -217,7 +225,9 @@ class Buffer:
         self.done[at] = False
         self.complete[at] = False
         self.succ[at] = -1
+        self.has_deal[at] = False
         for i, st in zip(at, streams):
+            self.episode.setdefault(st, []).append(int(i))
             prev = self.open.get(st)
             if prev is not None:
                 self.next_value[prev] = self.value[i]
@@ -233,8 +243,9 @@ class Buffer:
         if i is not None:
             self.reward[i] += r
 
-    def end(self, stream, r: float) -> None:
+    def end(self, stream, r: float, baseline: float | None = None, gamma: float = 1.0) -> None:
         i = self.open.pop(stream, None)
+        steps = self.episode.pop(stream, [])
         if i is None:
             return  # an episode that ended before the seat had a decision
         self.reward[i] += r
@@ -242,6 +253,15 @@ class Buffer:
         self.next_value[i] = 0
         self.complete[i] = True
         self.n_complete += 1
+        if baseline is not None:
+            # Return-to-go of each decision minus what the same seat scored on the same deal in
+            # the other copies. (Decisions of this hand already trained in an earlier update keep
+            # plain GAE.)
+            g = 0.0
+            for j in reversed(steps):
+                g = self.reward[j] + gamma * g
+                self.deal_adv[j] = g - baseline
+                self.has_deal[j] = True
 
     def advantages(self, gamma: float, lam: float) -> tuple[np.ndarray, np.ndarray]:
         n = self.n
@@ -268,18 +288,22 @@ class Buffer:
             other.mask[:k] = self.mask[t]
             if self.aux is not None and other.aux is not None:
                 other.aux[:k] = self.aux[t]
-            for name in ("action", "logp", "value", "reward", "next_value", "done", "complete"):
+            for name in ("action", "logp", "value", "reward", "next_value", "done", "complete", "has_deal"):
                 getattr(other, name)[:k] = getattr(self, name)[keep]
         other.succ[:k] = -1
         remap = {int(o): i for i, o in enumerate(keep)}
         other.open = {st: remap[i] for st, i in self.open.items() if i in remap}
+        # Only the open decision moves; the episode's earlier ones stay (and have been trained).
+        other.episode = {st: [remap[i]] for st, i in self.open.items() if i in remap}
         other.n = k
         self.open = {}
+        self.episode = {}
 
     def clear(self) -> None:
         self.n = 0
         self.n_complete = 0
         self.open = {}
+        self.episode = {}
 
 
 # ------------------------------------------------------------ workers
@@ -346,10 +370,12 @@ class Job(threading.Thread):
                 with torch.cuda.stream(t.train_stream):
                     t.train_stream.wait_event(self.ready)
                     self.logs = t.learn(self.buf, self.update, self.phase)
+                    t.ema_step(self.phase)
                     fresh = {k: v.detach().clone() for k, v in t.model.state_dict().items() if not k.startswith("aux.")}
                     t.train_stream.synchronize()
             else:
                 self.logs = t.learn(self.buf, self.update, self.phase)
+                t.ema_step(self.phase)
                 fresh = {k: v.detach().clone() for k, v in t.model.state_dict().items() if not k.startswith("aux.")}
             t.fresh = fresh
         except BaseException as e:  # re-raised by the main thread
@@ -383,6 +409,7 @@ class Trainer:
         self.model = HkNet(self.cfg, aux_dim=self.aux_dim).to(self.device)
         self.opt = torch.optim.Adam(self.model.parameters(), lr=args.bc_lr, eps=1e-5, fused=self.device.type == "cuda")
         self.update = 0
+        self.ema: dict | None = None
         self.pool: list[tuple[int, dict]] = []  # (update, state_dict on CPU)
         self.bc_state: dict | None = None
         self.rng = random.Random(args.seed)
@@ -417,6 +444,25 @@ class Trainer:
     def buf(self) -> Buffer:
         return self.bufs[self.cur]
 
+    # ---- weight averaging
+    def ema_step(self, phase: str) -> None:
+        """Exponential moving average of the weights over self-play updates (training thread)."""
+        if self.args.ema <= 0 or phase != "ppo":
+            return
+        with torch.no_grad():
+            if self.ema is None:
+                self.ema = {k: v.detach().float().clone() for k, v in self.model.state_dict().items() if not k.startswith("aux.")}
+                return
+            d = self.args.ema
+            for k, v in self.model.state_dict().items():
+                if k in self.ema:
+                    self.ema[k].mul_(d).add_(v.detach().float(), alpha=1 - d)
+
+    def ema_model(self) -> HkNet:
+        m = HkNet(self.cfg).to(self.device).eval()
+        m.load_state_dict(self.ema, strict=False)
+        return m
+
     # ---- checkpoints
     def _save(self) -> None:
         path = os.path.join(self.run_dir, "ckpt", "latest.pt")
@@ -427,6 +473,7 @@ class Trainer:
                 "opt": self.opt.state_dict(),
                 "pool": self.pool,
                 "bc_state": self.bc_state,
+                "ema": {k: v.cpu() for k, v in self.ema.items()} if self.ema is not None else None,
                 "net": asdict(self.cfg),
                 "aux_dim": self.aux_dim,
                 "rng": self.rng.getstate(),
@@ -444,6 +491,7 @@ class Trainer:
         self.opt = torch.optim.Adam(self.model.parameters(), lr=self.args.lr, eps=1e-5, fused=self.device.type == "cuda")
         self.opt.load_state_dict(ck["opt"])
         self.update, self.pool, self.bc_state = ck["update"], ck["pool"], ck["bc_state"]
+        self.ema = {k: v.to(self.device) for k, v in ck["ema"].items()} if ck.get("ema") else None
         self.rng.setstate(ck["rng"])
         print(f"resumed at update {self.update}")
 
@@ -472,6 +520,8 @@ class Trainer:
             "rewardScale": self.args.reward_scale,
             "episode": self.args.episode,
             "aux": self.aux_dim > 0,
+            # Copies of each deal for self-play (and past-self) games; imitation games don't need them.
+            "dealCopies": self.args.deal_copies if role in ("self", "pool") and self.args.episode == "hand" else 1,
         }
 
     def start_phase(self, phase: str) -> None:
@@ -522,7 +572,7 @@ class Trainer:
                 self._serve_eval(w, b)
                 continue
             for d in b.done:
-                self.buf.end((w.wid, d["env"], d["seat"]), d["reward"])
+                self.buf.end((w.wid, d["env"], d["seat"]), d["reward"], d.get("baseline"), self.args.gamma)
             for ep in b.episodes:
                 self._episode_stats(ep)
             if b.n == 0:
@@ -615,6 +665,14 @@ class Trainer:
         act = torch.from_numpy(buf.action[:n]).to(self.device)
         logp_old = torch.from_numpy(buf.logp[:n]).to(self.device)
         bc = phase == "bc"
+        deal = buf.has_deal[:n] & buf.complete[:n]
+        deal_share = float(deal[idx_np].mean()) if len(idx_np) else 0.0
+        if not bc and a.deal_beta > 0 and deal.any():
+            # Two estimates of the same advantage: GAE (per-step credit from the critic) and the
+            # deal baseline (no critic error, no luck of the deal, no per-step credit). Blend them.
+            mixed = adv_np.copy()
+            mixed[deal] = (1 - a.deal_beta) * adv_np[deal] + a.deal_beta * buf.deal_adv[:n][deal]
+            adv = torch.from_numpy(mixed).to(self.device)
         if not bc:
             sel = adv[idx]
             adv = (adv - sel.mean()) / (sel.std() + 1e-8)
@@ -681,6 +739,12 @@ class Trainer:
         if not bc:
             out["explained_var"] = float(1 - np.var(y - p) / (np.var(y) + 1e-8))
         out["samples"] = int(len(idx_np))
+        out["deal_share"] = deal_share
+        if deal_share > 0:
+            # How much of the GAE advantage the deal term accounts for (1 = same signal).
+            both = idx_np[deal[idx_np]]
+            x, y = adv_np[both], buf.deal_adv[both]
+            out["deal_gae_corr"] = float(np.corrcoef(x, y)[0, 1]) if len(both) > 2 and x.std() > 0 and y.std() > 0 else 0.0
         out["lr"] = lr_at(a, update)
         out["ent_coef"] = ent_coef if not bc else 0.0
         return out
@@ -688,7 +752,8 @@ class Trainer:
     # ---- evaluation (measurement only; never a training signal)
     def start_eval(self, kind: str) -> None:
         """'heuristic': the current network vs the heuristic AI; 'bc': vs the update-100 imitation
-        snapshot; 'bc_heuristic': that snapshot vs the heuristic (the starting point, run once)."""
+        snapshot; 'bc_heuristic': that snapshot vs the heuristic (the starting point, run once);
+        'ema': the averaged weights vs the current network."""
         if kind in ("bc", "bc_heuristic") and self.bc_state is None:
             return
         if any(e["kind"] == kind for e in self.evals):
@@ -696,17 +761,20 @@ class Trainer:
         w = Worker(1000 + len(self.evals), "eval")
         # One pair of acting copies per kind of evaluation, reused (their CUDA graphs too).
         if kind not in self.eval_nets:
-            self.eval_nets[kind] = (Inference(self.cfg, self.device, self.prec.store), Inference(self.cfg, self.device, self.prec.store) if kind == "bc" else None)
+            self.eval_nets[kind] = (
+                Inference(self.cfg, self.device, self.prec.store),
+                Inference(self.cfg, self.device, self.prec.store) if kind in ("bc", "ema") else None,
+            )
         w.net, w.opponent = self.eval_nets[kind]
-        w.net.load(self.bc_state if kind == "bc_heuristic" else self.model.state_dict())
+        w.net.load(self.bc_state if kind == "bc_heuristic" else self.ema if kind == "ema" else self.model.state_dict())
         if w.opponent is not None:
-            w.opponent.load(self.bc_state)
-        seats = [LEARNER, BC_OPP if kind == "bc" else "normal"] * 2
+            w.opponent.load(self.model.state_dict() if kind == "ema" else self.bc_state)
+        seats = [LEARNER, BC_OPP if kind in ("bc", "ema") else "normal"] * 2
         n = self.args.eval_matches
         # maxActions: two weak players can draw hand after hand (the dealer keeps the deal on a draw).
         w.reset(numEnvs=min(n, 32), seed=777, seats=seats, schedule="paired", maxMatches=n, rewardScale=1, aux=False, maxActions=4000)
         update = self.args.bc_updates if kind == "bc_heuristic" else self.trained
-        vs = "bc" if kind == "bc" else "heuristic"
+        vs = {"bc": "bc", "ema": "ema"}.get(kind, "heuristic")
         self.evals.append({"worker": w, "kind": kind, "vs": vs, "update": update, "episodes": [], "t0": time.time()})
 
     def _service_evals(self) -> None:
@@ -872,6 +940,16 @@ class Trainer:
         bc = sorted((e for e in evals if e["vs"] == "bc"), key=lambda e: e["update"])
         out += ["", f"## Against its own imitation snapshot (update {a.bc_updates})", "", "How far self-play has moved from where imitation left it.", ""]
         out += eval_table(bc, "snap") if bc else ["_No evaluation finished yet._"]
+        ema = sorted((e for e in evals if e["vs"] == "ema"), key=lambda e: e["update"])
+        if ema:
+            out += [
+                "",
+                f"## Averaged weights (EMA, decay {a.ema}) against the current network",
+                "",
+                "Positive = the average plays better than the latest weights; its file is `policies/update_NNNNN_ema.hknet`.",
+                "",
+            ]
+            out += eval_table(ema, "cur")
 
         out += [
             "",
@@ -1008,10 +1086,15 @@ class Trainer:
             self.start_eval("heuristic")
             if u > a.bc_updates:
                 self.start_eval("bc")
+            if self.ema is not None:
+                self.start_eval("ema")
         if u % a.export_every == 0 or u == a.updates:
             probe = torch.from_numpy(np.flatnonzero(job.buf.complete[: job.buf.n])[:2048]).to(self.device)
             rec["export"] = self.export(f"update_{u:05d}", job.buf.obs[probe], job.buf.mask[probe])
             export_net(self.model, self.spec, os.path.join(self.run_dir, "policies", "latest.hknet"), "i8", meta={"update": u})
+            if self.ema is not None:
+                export_net(self.ema_model(), self.spec, os.path.join(self.run_dir, "policies", f"update_{u:05d}_ema.hknet"), "i8",
+                           meta={"update": u, "ema": a.ema, "run": os.path.basename(self.run_dir)})
         if u % a.ckpt_every == 0 or u == a.updates:
             self._save()
         with open(os.path.join(self.run_dir, "metrics.jsonl"), "a") as f:

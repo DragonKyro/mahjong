@@ -76,10 +76,18 @@ The network only ever sees what its seat could see at a real table.
 2. **Updates 101–5,000: PPO self-play, with no heuristic involvement.** No imitation loss, no KL to the teacher, no heuristic opponents.
    - **Opponents:** 75% of the workers play four copies of the current network. The rest play two seats against one of its own past snapshots, taken every 20 updates (the last 20 are kept; the update-100 snapshot starts the pool).
    - **Reward:** each hand's score change / 32 points. Episodes are hands, with γ = 1 and GAE λ = 0.95.
+   - **Deal copies (`--deal-copies 4`):** in self-play and past-self games, every hand is played 4 times from the same state, the same wall and seating, each copy with its own move samples.
+     - When all four are done, each seat's result is compared with the average the same seat got in the other three copies: the *deal baseline*. That takes the luck of the tiles out of the learning signal.
+     - The match then continues from one copy, picked by the hand count rather than by how it went.
+     - The advantage is a blend: `(1 − β)·GAE + β·(return − deal baseline)`, with `--deal-beta` β = 0.5. GAE gives per-step credit through the critic; the deal term has no critic error and no deal luck. Decisions of a hand already trained in an earlier update keep plain GAE.
+     - Copies that finish early wait for the rest (at most about a quarter of the time), which is why there are 64 matches per worker.
    - **Optimisation:**
-     - 16,384 decisions per update, 3 epochs, minibatch 4,096;
+     - 65,536 decisions per update (hk1 used 16,384), 3 epochs, minibatch 4,096;
      - clip 0.2, early stop past 1.5 × the 0.03 KL target, Huber value loss;
-     - entropy bonus 0.01 → 0.002, Adam 3e-4 with cosine decay to 3e-5, grad clip 1.0, aux weight 0.1.
+     - entropy bonus 0.01 → 0.002, grad clip 1.0, aux weight 0.1;
+     - Adam 3e-4 with cosine decay to 1e-4. hk1 decayed to 3e-5 and the policy all but stopped moving after update ~4000 (KL ≈ 0.001).
+   - **Weight averaging (`--ema 0.99`):** an exponential moving average of the weights over self-play updates (a window of roughly 100 updates). It is exported as `policies/update_NNNNN_ema.hknet` beside each snapshot, measured against the current network at every evaluation, and kept in checkpoints.
+   - **Cost:** with these defaults an update takes several times longer than hk1's ~3 s. Pick `--updates` with that in mind; I'd measure the first few updates before committing to a length.
 3. **Evaluation (measurement only; it never feeds training).**
    - Every 100 updates: 64 paired-seed matches (each seed twice, seats swapped) against the heuristic AI, and against the update-100 imitation snapshot. The second measures how far self-play has moved past the starting point.
    - The network plays greedily.
@@ -90,6 +98,9 @@ The network only ever sees what its seat could see at a real table.
      - points paid on the other side's wins: self-draw shares, 半銃 bystander shares, and 包. This is where denying big hands shows up.
    - The update-100 snapshot is also played against the heuristic once, to give the imitation baseline.
    - On `--resume`, the restored network is evaluated right away.
+   - With `--ema`, the averaged weights play the current ones.
+
+**Averaging finished checkpoints** (no training): `training/hk/average.py` averages a run's saved snapshots (`--ckpt …/latest.pt --last N`, full precision) or any `.hknet` files. Measure the result with `evaluate.py`.
 
 ## Speed
 

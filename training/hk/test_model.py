@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 
@@ -110,4 +111,38 @@ def test_training_smoke(tmp_path):
     assert len(lines) == 4
     assert (run / "policies" / "update_00004.hknet").exists()
     assert (run / "ckpt" / "latest.pt").exists()
-    assert len((run / "evals.jsonl").read_text().strip().splitlines()) == 2
+    # Self-play ran with deal copies (the default), and the averaged weights were exported and measured.
+    ppo = [json.loads(l) for l in lines if json.loads(l)["phase"] == "ppo"]
+    assert all(m["deal_share"] > 0 for m in ppo[1:])
+    assert (run / "policies" / "update_00004_ema.hknet").exists()
+    evals = [json.loads(l) for l in (run / "evals.jsonl").read_text().strip().splitlines()]
+    assert sorted(e["vs"] for e in evals) == ["bc", "ema", "heuristic"]
+    ck = torch.load(run / "ckpt" / "latest.pt", map_location="cpu", weights_only=False)
+    assert ck["ema"] is not None
+
+
+def test_deal_baseline_advantage():
+    """A seat's decisions in a replayed hand get (return-to-go − the other copies' mean); carried decisions keep their place."""
+    buf = train.Buffer(32, 4, 3, 0, torch.device("cpu"), torch.float32)
+    obs, mask = torch.zeros(1, 4), torch.ones(1, 3, dtype=torch.bool)
+    a = (0, 0, 0)
+    b = (0, 1, 0)
+    for _ in range(3):
+        buf.add([a], obs, mask, None, [0], [0.0], [0.0])
+    buf.add([b], obs, mask, None, [0], [0.0], [0.0])
+    buf.reward_to(a, 0.5)  # an intra-hand reward, owed to a's newest decision
+    buf.end(a, 1.0, baseline=0.25)
+    assert buf.complete[:3].all() and buf.done[2]
+    np.testing.assert_allclose(buf.deal_adv[:3], [1.25, 1.25, 1.25])  # 0.5 + 1.0 − 0.25 for every step
+    assert buf.has_deal[:3].all() and not buf.has_deal[3]
+    # b's hand is still going: its decision moves to the next buffer alone and is completed there.
+    nxt = train.Buffer(32, 4, 3, 0, torch.device("cpu"), torch.float32)
+    buf.carry_into(nxt)
+    assert nxt.n == 1 and nxt.open == {b: 0} and nxt.episode == {b: [0]}
+    nxt.add([b], obs, mask, None, [0], [0.0], [0.0])
+    nxt.end(b, -2.0, baseline=-1.0)
+    np.testing.assert_allclose(nxt.deal_adv[:2], [-1.0, -1.0])
+    # No baseline (no copies): plain GAE only.
+    nxt.add([a], obs, mask, None, [0], [0.0], [0.0])
+    nxt.end(a, 1.0)
+    assert not nxt.has_deal[2]

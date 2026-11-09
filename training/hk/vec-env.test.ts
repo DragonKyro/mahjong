@@ -102,4 +102,50 @@ describe('HK vec env', () => {
     expect(episodes[0]!.who).toEqual(['net', 'normal', 'net', 'normal']);
     expect(episodes[1]!.who).toEqual(['normal', 'net', 'normal', 'net']);
   });
+
+  it('deal copies: every copy starts each hand from the same state, reports a leave-one-out baseline, and carries on identically', () => {
+    const K = 4;
+    const env = new HkVecEnv({ numEnvs: 8, seed: 9, seats: ['learner', 'learner', 'learner', 'learner'], dealCopies: K, rewardScale: 1 });
+    const rng = new Rng(3);
+    const json = (i: number) => JSON.stringify(env.stateOf(i));
+    let b = env.reset();
+    // At the start, both groups' copies hold one state each (and the groups differ).
+    for (const g of [0, 1]) for (let c = 1; c < K; c++) expect(json(g * K + c)).toBe(json(g * K));
+    expect(json(0)).not.toBe(json(K));
+    let resolved = 0;
+    let differed = 0;
+    for (let step = 0; step < 4000 && resolved < 6; step++) {
+      const byGroup = new Map<number, typeof b.done>();
+      for (const d of b.done) byGroup.set(Math.floor(d.env / K), [...(byGroup.get(Math.floor(d.env / K)) ?? []), d]);
+      for (const [g, done] of byGroup) {
+        // One record per copy and seat.
+        expect(done).toHaveLength(K * 4);
+        for (const d of done) {
+          const others = done.filter((o) => o.seat === d.seat && o.env !== d.env).map((o) => o.reward);
+          expect(d.baseline).toBeCloseTo(others.reduce((x, y) => x + y, 0) / (K - 1), 9);
+        }
+        // Each copy's hand is zero-sum.
+        for (let c = 0; c < K; c++) expect(Math.abs(done.filter((d) => d.env === g * K + c).reduce((x, d) => x + d.reward, 0))).toBeLessThan(1e-9);
+        if (new Set(done.map((d) => `${d.seat}:${d.reward}`)).size > 4) differed++;
+        // The next hand starts from one state in every copy.
+        for (let c = 1; c < K; c++) expect(json(g * K + c)).toBe(json(g * K));
+        resolved++;
+      }
+      b = env.step(randomActions(b, rng));
+    }
+    expect(resolved).toBeGreaterThanOrEqual(6);
+    expect(differed).toBeGreaterThan(0); // the copies really play differently
+  });
+
+  it('no deal copies: done records carry no baseline', () => {
+    const env = new HkVecEnv({ numEnvs: 2, seed: 3, seats: ['teacher', 'teacher', 'teacher', 'teacher'] });
+    let b = env.reset();
+    let seen = 0;
+    for (let step = 0; step < 600 && seen === 0; step++) {
+      seen += b.done.length;
+      expect(b.done.every((d) => d.baseline === null)).toBe(true);
+      b = env.step(b.hint);
+    }
+    expect(seen).toBeGreaterThan(0);
+  });
 });

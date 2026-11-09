@@ -20,6 +20,15 @@
 // or in a `done` record when its episode ends — at every hand end
 // (episode 'hand') or at the match end (episode 'match'). rankReward[rank] is
 // added at the match end.
+//
+// Deal copies (dealCopies K > 1, hand episodes only): envs come in groups of
+// K that play every hand from the same state — the same wall, scores and
+// seating — with their own action samples. A copy that finishes waits for the
+// others; then every copy's `done` carries a `baseline`, the mean reward the
+// other copies' same seat got on that deal, so the learner can judge a play
+// against the same tiles played differently instead of against the luck of
+// the deal. The match then carries on from one copy's result (chosen by the
+// hand count, not by how it went), identically in every copy.
 
 import { applyAction, handCounts, isFinalHand, pendingSeats, setsNeeded, createMatch, type Action, type AiLevel, type MatchState } from '@/core/engine';
 import { shanten, waits } from '@/core/hand';
@@ -57,6 +66,8 @@ export interface VecEnvOptions {
   aux: boolean;
   /** Give up on a match after this many actions. */
   maxActions: number;
+  /** Envs per deal group (1 = no copies). See above. */
+  dealCopies: number;
 }
 
 export const DEFAULT_OPTIONS: VecEnvOptions = {
@@ -73,6 +84,7 @@ export const DEFAULT_OPTIONS: VecEnvOptions = {
   autoForced: true,
   aux: false,
   maxActions: 20_000,
+  dealCopies: 1,
 };
 
 /** Per opponent (next, across, prev): concealed counts / 4 (34), ready (1), waits (34). */
@@ -114,6 +126,8 @@ export interface Done {
   who: string;
   /** Reward since the seat's last request (the rank reward included at a match end). */
   reward: number;
+  /** Deal copies: the mean episode reward of this seat in the deal's other copies (null without copies). */
+  baseline: number | null;
 }
 
 export interface VecBatch {
@@ -156,6 +170,10 @@ interface Env {
   reqs: Request[];
   /** Heuristic / forced answers decided on that same state, applied together with the requests' answers. */
   deferred: Action[];
+  /** Deal copies: this copy finished its hand and waits for the rest of its group. */
+  waiting: boolean;
+  /** Deal copies: the hand's reward per seat (rank reward included), from the moment it finished. */
+  handReward: number[];
 }
 
 function auxTargets(s: MatchState, seat: number, out: Float32Array, at: number): void {
@@ -214,12 +232,18 @@ export class HkVecEnv {
   constructor(options: Partial<VecEnvOptions> = {}) {
     this.opts = { ...DEFAULT_OPTIONS, ...options };
     if (this.opts.seats.length !== 4) throw new Error('seats needs four controllers');
+    if (this.copies > 1) {
+      if (this.opts.episode !== 'hand') throw new Error('deal copies need hand episodes');
+      if (this.opts.maxMatches > 0) throw new Error('deal copies are for training, not fixed-length evaluation');
+      this.opts.numEnvs -= this.opts.numEnvs % this.copies;
+      if (this.opts.numEnvs === 0) throw new Error(`numEnvs must be at least dealCopies (${this.copies})`);
+    }
   }
 
   private newMatch(i: number): boolean {
     const o = this.opts;
     if (o.maxMatches > 0 && this.nextMatch >= o.maxMatches) {
-      this.envs[i] = { s: null, match: -1, seed: 0, who: [], accrued: [0, 0, 0, 0], actions: 0, reqs: [], deferred: [] };
+      this.envs[i] = { s: null, match: -1, seed: 0, who: [], accrued: [0, 0, 0, 0], actions: 0, reqs: [], deferred: [], waiting: false, handReward: [0, 0, 0, 0] };
       return false;
     }
     const match = this.nextMatch++;
@@ -233,8 +257,64 @@ export class HkVecEnv {
       seed,
       seats: who.map((w, k) => ({ name: `${w}${k}`, ai: true, level: HEURISTIC.has(w) ? (w as AiLevel) : o.teacherLevel })),
     });
-    this.envs[i] = { s, match, seed, who, accrued: [0, 0, 0, 0], actions: 0, reqs: [], deferred: [] };
+    this.envs[i] = { s, match, seed, who, accrued: [0, 0, 0, 0], actions: 0, reqs: [], deferred: [], waiting: false, handReward: [0, 0, 0, 0] };
     return true;
+  }
+
+  private get copies(): number {
+    return Math.max(1, Math.floor(this.opts.dealCopies));
+  }
+
+  /** A new match for a whole deal group: the leader draws it, the copies take the same one. */
+  private newGroupMatch(g: number): boolean {
+    const K = this.copies;
+    const lead = g * K;
+    const ok = this.newMatch(lead);
+    const L = this.envs[lead]!;
+    for (let c = 1; c < K; c++) {
+      this.envs[lead + c] = { ...L, accrued: [0, 0, 0, 0], reqs: [], deferred: [], waiting: false, handReward: [0, 0, 0, 0] };
+    }
+    return ok;
+  }
+
+  /** Every copy of group `g` has finished its hand: report it, then carry on from one copy. */
+  private resolveGroup(g: number): void {
+    const K = this.copies;
+    const group = Array.from({ length: K }, (_, c) => this.envs[g * K + c]!);
+    group.forEach((env, c) => {
+      env.who.forEach((who, seat) => {
+        if (!isNetwork(who)) return;
+        let others = 0;
+        group.forEach((o, d) => d !== c && (others += o.handReward[seat]!));
+        this.done.push({ env: g * K + c, seat, who, reward: env.handReward[seat]!, baseline: others / (K - 1) });
+      });
+      env.accrued = [0, 0, 0, 0];
+    });
+    // Which copy's hand the match keeps: by the hand count, so the choice can't favour anyone.
+    const keep = group[group[0]!.s!.handNo % K]!;
+    let s = keep.s!;
+    let actions = keep.actions;
+    for (const seat of pendingSeats(s)) {
+      s = applyAction(s, { type: 'ready', seat });
+      actions++;
+    }
+    if (s.over || actions >= this.opts.maxActions) {
+      const lead = group[0]!;
+      lead.s = s;
+      lead.actions = actions;
+      this.finish(g * K, lead, !s.over);
+      if (!this.newGroupMatch(g)) return;
+    } else {
+      for (const env of group) {
+        env.s = s;
+        env.actions = actions;
+      }
+    }
+    for (const env of group) {
+      env.waiting = false;
+      env.handReward = [0, 0, 0, 0];
+    }
+    for (let c = 0; c < K; c++) this.advance(g * K + c);
   }
 
   private apply(env: Env, action: Action): void {
@@ -260,7 +340,7 @@ export class HkVecEnv {
   private emitDone(i: number, env: Env, bonus: number[] | null): void {
     env.who.forEach((who, seat) => {
       if (!isNetwork(who)) return;
-      this.done.push({ env: i, seat, who, reward: env.accrued[seat]! + (bonus?.[seat] ?? 0) });
+      this.done.push({ env: i, seat, who, reward: env.accrued[seat]! + (bonus?.[seat] ?? 0), baseline: null });
       env.accrued[seat] = 0;
     });
   }
@@ -288,11 +368,21 @@ export class HkVecEnv {
 
   /** Play until the env waits on network seats (or goes idle). */
   private advance(i: number): void {
+    const K = this.copies;
     for (;;) {
       const env = this.envs[i]!;
       const s = env.s;
-      if (!s) return;
-      if (s.over || env.actions >= this.opts.maxActions) {
+      if (!s || env.waiting) return;
+      if (K > 1 && s.hand.phase === 'end') {
+        // Wait for the rest of the deal; the last copy to finish resolves the group.
+        env.waiting = true;
+        const bonus = isFinalHand(s) ? this.rankBonus(s) : null;
+        env.handReward = env.accrued.map((r, seat) => r + (bonus?.[seat] ?? 0));
+        const g = Math.floor(i / K);
+        if (this.envs.slice(g * K, g * K + K).every((e) => e.waiting)) this.resolveGroup(g);
+        return;
+      }
+      if (s.over || (K === 1 && env.actions >= this.opts.maxActions)) {
         this.finish(i, env, !s.over);
         if (!this.newMatch(i)) return;
         continue;
@@ -396,7 +486,12 @@ export class HkVecEnv {
     this.nextMatch = 0;
     this.done = [];
     this.episodes = [];
-    for (let i = 0; i < this.opts.numEnvs; i++) if (this.newMatch(i)) this.advance(i);
+    const K = this.copies;
+    if (K === 1) {
+      for (let i = 0; i < this.opts.numEnvs; i++) if (this.newMatch(i)) this.advance(i);
+    } else {
+      for (let g = 0; g < this.opts.numEnvs / K; g++) if (this.newGroupMatch(g)) for (let c = 0; c < K; c++) this.advance(g * K + c);
+    }
     return this.batch();
   }
 
@@ -404,7 +499,11 @@ export class HkVecEnv {
   step(actions: ArrayLike<number>): VecBatch {
     const expected = this.envs.reduce((a, e) => a + e.reqs.length, 0);
     if (actions.length !== expected) throw new Error(`expected ${expected} actions, got ${actions.length}`);
+    // Decode every answer against the batch first: applying one env's moves can
+    // finish a deal and advance its sibling copies, which then hold new requests
+    // that this batch's actions don't belong to.
     let j = 0;
+    const work: { e: Env; i: number; all: Action[] }[] = [];
     this.envs.forEach((e, i) => {
       if (e.reqs.length === 0) return;
       const s = e.s!;
@@ -413,12 +512,14 @@ export class HkVecEnv {
         if (!r.mask[slot]) throw new Error(`env ${i}: slot ${slot} is not legal for seat ${r.seat}`);
         return decodeSlot(s, r.seat, slot);
       });
-      const all = [...answers, ...e.deferred];
+      work.push({ e, i, all: [...answers, ...e.deferred] });
       e.reqs = [];
       e.deferred = [];
+    });
+    for (const { e, i, all } of work) {
       this.applyAll(e, all);
       this.advance(i);
-    });
+    }
     return this.batch();
   }
 }
