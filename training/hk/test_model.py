@@ -16,7 +16,7 @@ import pytest
 import torch
 
 from env_client import EnvClient
-from model import HkNet, NetConfig, export_net, load_net, masked_logits, param_count, quantized_copy, read_net
+from model import HkNet, NetConfig, adapt_state, export_net, load_net, masked_logits, param_count, quantized_copy, read_net
 import train
 
 
@@ -48,12 +48,12 @@ def test_sparse_batches_rebuild_the_observations(env):
     assert 0.01 < (x != 0).mean() < 0.2
 
 
-@pytest.mark.parametrize("weights", ["f32", "i8"])
-def test_ts_and_torch_agree(env, weights):
+@pytest.mark.parametrize("weights,danger", [("f32", 16), ("i8", 16), ("f32", 0)])
+def test_ts_and_torch_agree(env, weights, danger):
     """Random weights, real observations: the TS forward pass on the exported file equals PyTorch's on the same (dequantised) weights."""
     spec = env.spec
     torch.manual_seed(0)
-    model = HkNet(small(spec))
+    model = HkNet(small(spec, danger=danger))
     with torch.no_grad():
         for p in model.parameters():
             p.normal_(0, 0.05)
@@ -81,14 +81,24 @@ def test_int8_file_plays_like_the_float_network(env):
     with torch.no_grad():
         for p in model.parameters():
             p.normal_(0, 0.03)
-    b = env.reset(numEnvs=32, seed=4, seats=["a", "b", "c", "d"])
-    obs = torch.from_numpy(b.dense(spec["obsDim"]))
-    mask = torch.from_numpy(b.mask.copy())
+    # A few hundred positions: random weights give near-ties, so judge the distribution as well as the top move.
+    rng = np.random.default_rng(0)
+    b = env.reset(numEnvs=64, seed=4, seats=["a", "b", "c", "d"])
+    obs, mask = [b.dense(spec["obsDim"])], [b.mask.copy()]
+    for _ in range(5):
+        b = env.step([rng.choice(np.flatnonzero(m)) for m in b.mask])
+        obs.append(b.dense(spec["obsDim"]))
+        mask.append(b.mask.copy())
+    obs, mask = torch.from_numpy(np.concatenate(obs)), torch.from_numpy(np.concatenate(mask))
     q = quantized_copy(model, "i8")
     with torch.no_grad():
         a = masked_logits(model(obs)[0], mask)
         c = masked_logits(q(obs)[0], mask)
-    assert (a.argmax(-1) == c.argmax(-1)).float().mean() > 0.95
+    pa = torch.log_softmax(a, -1)
+    kl = float((pa.exp() * (pa - torch.log_softmax(c, -1))).sum(-1).mean())
+    assert len(obs) > 300
+    assert (a.argmax(-1) == c.argmax(-1)).float().mean() > 0.9
+    assert kl < 0.01
 
 
 def test_training_smoke(tmp_path):
@@ -114,6 +124,7 @@ def test_training_smoke(tmp_path):
     # Self-play ran with deal copies (the default), and the averaged weights were exported and measured.
     ppo = [json.loads(l) for l in lines if json.loads(l)["phase"] == "ppo"]
     assert all(m["deal_share"] > 0 for m in ppo[1:])
+    assert all("danger_ron_loss" in m for m in ppo)
     assert (run / "policies" / "update_00004_ema.hknet").exists()
     evals = [json.loads(l) for l in (run / "evals.jsonl").read_text().strip().splitlines()]
     assert sorted(e["vs"] for e in evals) == ["bc", "ema", "heuristic"]
@@ -146,3 +157,46 @@ def test_deal_baseline_advantage():
     nxt.add([a], obs, mask, None, [0], [0.0], [0.0])
     nxt.end(a, 1.0)
     assert not nxt.has_deal[2]
+
+
+def test_adapting_old_weights_keeps_the_policy():
+    """A network without a danger head, moved into one with it: same logits and value to begin with."""
+    spec = {"defaultNet": dict(planes=201, globals=946, channels=16, blocks=1, neck=4, globalHidden=16, hidden=32, valueHidden=8, slots=78)}
+    torch.manual_seed(3)
+    old = HkNet(NetConfig.from_spec(spec, danger=0), aux_dim=5)
+    new = HkNet(NetConfig.from_spec(spec, danger=8), aux_dim=5)
+    with torch.no_grad():
+        for p in old.parameters():
+            p.normal_(0, 0.05)
+    new.load_state_dict(adapt_state(old.state_dict(), new))
+    x = (torch.rand(6, 201 * 34 + 946) < 0.06).float()
+    with torch.no_grad():
+        a, b = old(x), new(x)
+    torch.testing.assert_close(a[0], b[0])
+    torch.testing.assert_close(a[1], b[1])
+    assert new.outputs(x)[3].shape == (6, 4, 34)
+
+
+def test_warm_start_from_a_run_without_a_danger_head(tmp_path):
+    """--init-from: a head-less run's checkpoint seeds a run with the head; it plays the same at first and trains."""
+    if not torch.cuda.is_available():
+        pytest.skip("needs the GPU")
+    common = ["--out", str(tmp_path), "--no-build", "--workers", "2", "--envs", "8", "--groups", "1", "--samples", "512",
+              "--minibatch", "256", "--epochs", "1", "--eval-every", "0", "--export-every", "100", "--ckpt-every", "1",
+              "--channels", "16", "--blocks", "1", "--hidden", "32"]
+    train.Trainer(train.parse_args(["--name", "src", "--updates", "2", "--bc-updates", "1", "--danger", "0", *common])).run()
+    ck = str(tmp_path / "src" / "ckpt" / "latest.pt")
+    t = train.Trainer(train.parse_args(["--name", "dst", "--updates", "1", "--init-from", ck, "--danger", "8", *common]))
+    assert t.args.bc_updates == 0 and t.cfg.danger == 8 and t.bc_state is not None and t.pool
+    src = torch.load(ck, map_location="cpu", weights_only=False)
+    before = HkNet(NetConfig(**src["net"]), aux_dim=t.aux_dim)
+    before.load_state_dict(src["model"])
+    x = (torch.rand(4, t.D) < 0.06).float()
+    with torch.no_grad():
+        torch.testing.assert_close(before(x)[0], t.model.cpu()(x)[0])
+    t.model.to(t.device)
+    t.run()
+    m = [json.loads(l) for l in (tmp_path / "dst" / "metrics.jsonl").read_text().splitlines()]
+    assert m[0]["phase"] == "ppo" and "danger_ron_loss" in m[0]
+    assert json.loads((tmp_path / "dst" / "config.json").read_text())["init"]["update"] == 2
+

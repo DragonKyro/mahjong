@@ -9,6 +9,7 @@
 //      payload (little-endian, in this order):
 //        val  f32 × nnzTotal     non-zero observation values, row after row
 //        aux  f32 × n × auxDim   (only when aux is on)
+//        danger f32 × n × dangerDim (only when danger is on)
 //        idx  u16 × nnzTotal     their indices
 //        nnz  u16 × n            non-zeros per row
 //        mask u8  × n × numSlots
@@ -22,7 +23,7 @@ import { createInterface } from 'node:readline';
 import { ACTION_SPACE_VERSION, NUM_SLOTS, SLOT_NAMES } from '@/core/nn/hkActions';
 import { ENCODER_VERSION, GLOBAL_DIM, KINDS, NUM_PLANES, OBS_DIM, featureLayout } from '@/core/nn/hkEncode';
 import { DEFAULT_NET_CONFIG, NET_FORMAT, loadHkNet } from '@/core/nn/hkNet';
-import { AUX_DIM, HkVecEnv, type VecBatch, type VecEnvOptions } from './vec-env';
+import { AUX_DIM, DANGER_DIM, HkVecEnv, type VecBatch, type VecEnvOptions } from './vec-env';
 
 const bytesOf = (a: ArrayBufferView) => Buffer.from(a.buffer, a.byteOffset, a.byteLength);
 
@@ -48,8 +49,9 @@ function sendBatch(b: VecBatch): void {
       finished: b.finished,
       nnzTotal: b.idx.length,
       aux: !!b.aux,
+      danger: !!b.danger,
     },
-    [bytesOf(b.val), ...(b.aux ? [bytesOf(b.aux)] : []), bytesOf(b.idx), bytesOf(b.nnz), bytesOf(b.mask)],
+    [bytesOf(b.val), ...(b.aux ? [bytesOf(b.aux)] : []), ...(b.danger ? [bytesOf(b.danger)] : []), bytesOf(b.idx), bytesOf(b.nnz), bytesOf(b.mask)],
   );
 }
 
@@ -74,6 +76,7 @@ function handle(msg: Request): void {
         globalDim: GLOBAL_DIM,
         numSlots: NUM_SLOTS,
         auxDim: AUX_DIM,
+        dangerDim: DANGER_DIM,
         slotNames: SLOT_NAMES,
         featureLayout: featureLayout(),
         encoderVersion: ENCODER_VERSION,

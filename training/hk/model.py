@@ -31,6 +31,7 @@ KINDS = 34
 DISCARD0 = 0
 KONG0 = 35
 NET_FORMAT = "mahjong/hknet@2"
+DANGER_OUT = 4  # per kind: could-win logits for next / across / prev, then the expected cost
 MAGIC = b"HKN2"
 
 
@@ -45,6 +46,7 @@ class NetConfig:
     hidden: int = 512
     valueHidden: int = 128
     slots: int = 78
+    danger: int = 0  # hidden channels of the danger head (0 = none, like the hk1 networks)
 
     @classmethod
     def from_spec(cls, spec: dict, **over) -> "NetConfig":
@@ -78,7 +80,11 @@ class HkNet(nn.Module):
         self.global_embed = nn.Linear(cfg.globals, cfg.globalHidden)
         self.trunk = nn.Linear(cfg.neck * KINDS + cfg.globalHidden, cfg.hidden)
         self.policy = nn.Linear(cfg.hidden, cfg.slots)
-        self.tile_policy = nn.Conv1d(c, 2, 1)
+        self.tile_policy = nn.Conv1d(c + (DANGER_OUT if cfg.danger else 0), 2, 1)
+        if cfg.danger:
+            self.danger_hidden = nn.Conv1d(c, cfg.danger, 1)
+            self.danger_global = nn.Linear(cfg.hidden, cfg.danger)
+            self.danger_out = nn.Conv1d(cfg.danger, DANGER_OUT, 1)
         self.value1 = nn.Linear(cfg.hidden, cfg.valueHidden)
         self.value2 = nn.Linear(cfg.valueHidden, 1)
         self.aux = nn.Linear(cfg.hidden, aux_dim) if aux_dim else None
@@ -90,6 +96,12 @@ class HkNet(nn.Module):
 
     def forward(self, obs: torch.Tensor):
         """obs [B, obsDim] -> (logits [B, slots], value [B], aux [B, auxDim] or None)."""
+        logits, value, aux, _ = self.outputs(obs)
+        return logits, value, aux
+
+    def outputs(self, obs: torch.Tensor):
+        """forward, plus the danger head's raw output [B, 4, 34] (or None): could-win logits for
+        next / across / prev, then the expected cost of discarding each kind now."""
         cfg = self.cfg
         p = cfg.planes * KINDS
         x = obs[:, :p].reshape(-1, cfg.planes, KINDS)
@@ -100,13 +112,40 @@ class HkNet(nn.Module):
         neck = F.relu(self.neck(x)).flatten(1)
         ge = F.relu(self.global_embed(g))
         z = F.relu(self.trunk(torch.cat([neck, ge], 1)))
-        t = self.tile_policy(x)  # [B, 2, 34]
+        danger = None
+        tile_in = x
+        if cfg.danger:
+            raw = self.danger_out(F.relu(self.danger_hidden(x) + self.danger_global(z)[:, :, None]))  # [B, 4, 34]
+            danger = raw
+            # The policy sees probabilities for the three could-win channels and the raw expected cost.
+            tile_in = torch.cat([x, torch.sigmoid(raw[:, :3]), raw[:, 3:]], 1)
+        t = self.tile_policy(tile_in)  # [B, 2, 34]
         zeros = torch.zeros_like(t[:, 0, :1])
         tile_term = torch.cat([t[:, 0], zeros, t[:, 1], zeros.expand(-1, cfg.slots - KONG0 - KINDS)], 1)
         logits = self.policy(z) + tile_term
         value = self.value2(F.relu(self.value1(z))).squeeze(-1)
         aux = self.aux(z) if self.aux is not None else None
-        return logits, value, aux
+        return logits, value, aux, danger
+
+
+def adapt_state(state: dict, model: "HkNet") -> dict:
+    """Weights from a network without a danger head, made to fit `model`: tensors that match are
+    taken, the per-kind policy weights gain zero columns for the danger inputs (so the policy
+    starts out exactly as it was), and everything else keeps `model`'s own initialisation."""
+    out = {}
+    for k, cur in model.state_dict().items():
+        src = state.get(k)
+        if src is None:
+            out[k] = cur
+        elif tuple(src.shape) == tuple(cur.shape):
+            out[k] = src.to(cur.dtype)
+        elif k == "tile_policy.weight" and src.shape[0] == cur.shape[0] and src.shape[1] < cur.shape[1]:
+            w = torch.zeros_like(cur)
+            w[:, : src.shape[1]] = src.to(cur.dtype)
+            out[k] = w
+        else:
+            raise ValueError(f"{k}: can't fit {tuple(src.shape)} into {tuple(cur.shape)}")
+    return out
 
 
 def masked_logits(logits: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:

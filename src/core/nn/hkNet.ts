@@ -33,9 +33,20 @@ export interface HkNetConfig {
   hidden: number;
   valueHidden: number;
   slots: number;
+  /**
+   * Hidden channels of the danger head (0 / absent = no head: the networks
+   * shipped from run hk1). The head reads the per-kind features and the trunk
+   * and predicts, for each kind, whether next / across / prev could win on it
+   * if I discarded it now, and what that would cost me; its four outputs join
+   * the per-kind policy term, so the discard choice sees them directly.
+   */
+  danger?: number;
 }
 
-/** The planned size: 1.83M parameters, ~25M multiply-adds per decision. */
+/** Danger outputs per kind: could-win logits for next, across, prev, then the expected cost. */
+export const DANGER_OUT = 4;
+
+/** The planned size: ~1.85M parameters, ~25M multiply-adds per decision. */
 export const DEFAULT_NET_CONFIG: HkNetConfig = {
   planes: NUM_PLANES,
   globals: GLOBAL_DIM,
@@ -46,6 +57,7 @@ export const DEFAULT_NET_CONFIG: HkNetConfig = {
   hidden: 512,
   valueHidden: 128,
   slots: NUM_SLOTS,
+  danger: 32,
 };
 
 // ------------------------------------------------------------ the file
@@ -224,13 +236,23 @@ export function tensorShapes(c: HkNetConfig): Record<string, number[]> {
     'trunk.bias': [c.hidden],
     'policy.weight': [c.slots, c.hidden],
     'policy.bias': [c.slots],
-    'tile_policy.weight': [2, c.channels, 1],
+    'tile_policy.weight': [2, c.channels + (c.danger ? DANGER_OUT : 0), 1],
     'tile_policy.bias': [2],
     'value1.weight': [c.valueHidden, c.hidden],
     'value1.bias': [c.valueHidden],
     'value2.weight': [1, c.valueHidden],
     'value2.bias': [1],
   });
+  if (c.danger) {
+    Object.assign(t, {
+      'danger_hidden.weight': [c.danger, c.channels, 1],
+      'danger_hidden.bias': [c.danger],
+      'danger_global.weight': [c.danger, c.hidden],
+      'danger_global.bias': [c.danger],
+      'danger_out.weight': [DANGER_OUT, c.danger, 1],
+      'danger_out.bias': [DANGER_OUT],
+    });
+  }
   return t;
 }
 
@@ -296,6 +318,8 @@ function conv(x: Float32Array, cin: number, w: Float32Array, b: Float32Array, k:
 export interface NetOutput {
   logits: Float32Array;
   value: number;
+  /** With a danger head: [4 × 34] — could-win probabilities for next / across / prev, then the expected cost (reward units). */
+  danger?: Float32Array;
 }
 
 export interface HkNet {
@@ -348,14 +372,27 @@ export function loadHkNet(bytes: Uint8Array | ArrayBuffer): HkNet {
       const z = relu(dense(joined, w('trunk.weight'), w('trunk.bias')));
 
       const logits = dense(z, w('policy.weight'), w('policy.bias'));
-      const tile = conv(x, c.channels, w('tile_policy.weight'), w('tile_policy.bias'), 1);
+      let tileIn = x;
+      let danger: Float32Array | undefined;
+      if (c.danger) {
+        const hd = conv(x, c.channels, w('danger_hidden.weight'), w('danger_hidden.bias'), 1);
+        const g = dense(z, w('danger_global.weight'), w('danger_global.bias'));
+        for (let o = 0; o < c.danger; o++) for (let j = 0; j < KINDS; j++) hd[o * KINDS + j]! += g[o]!;
+        const raw = conv(relu(hd), c.danger, w('danger_out.weight'), w('danger_out.bias'), 1);
+        danger = raw.slice();
+        for (let i = 0; i < 3 * KINDS; i++) danger[i] = 1 / (1 + Math.exp(-raw[i]!));
+        tileIn = new Float32Array((c.channels + DANGER_OUT) * KINDS);
+        tileIn.set(x, 0);
+        tileIn.set(danger, c.channels * KINDS);
+      }
+      const tile = conv(tileIn, c.channels + (c.danger ? DANGER_OUT : 0), w('tile_policy.weight'), w('tile_policy.bias'), 1);
       for (let k = 0; k < KINDS; k++) {
         logits[SLOT.discard + k]! += tile[k]!;
         logits[SLOT.kong + k]! += tile[KINDS + k]!;
       }
       const v1 = relu(dense(z, w('value1.weight'), w('value1.bias')));
       const value = dense(v1, w('value2.weight'), w('value2.bias'))[0]!;
-      return { logits, value };
+      return { logits, value, ...(danger ? { danger } : {}) };
     },
   };
 }

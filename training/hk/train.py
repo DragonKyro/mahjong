@@ -39,7 +39,7 @@ import torch.nn.functional as F
 
 sys.path.insert(0, os.path.dirname(__file__))
 from env_client import ROOT, EnvClient, build_bundle  # noqa: E402
-from model import HkNet, NetConfig, export_net, masked_logits, param_count, quantized_copy  # noqa: E402
+from model import HkNet, NetConfig, adapt_state, export_net, masked_logits, param_count, quantized_copy  # noqa: E402
 
 # ------------------------------------------------------------ options
 
@@ -66,6 +66,10 @@ def parse_args(argv=None):
     p.add_argument("--ent", type=float, default=0.01)
     p.add_argument("--ent-final", type=float, default=0.002)
     p.add_argument("--aux-coef", type=float, default=0.1)
+    p.add_argument("--danger-coef", type=float, default=0.5,
+                   help="weight of the danger head's loss (who could win on each discard, what it would cost); 0 = no head")
+    p.add_argument("--init-from", default=None,
+                   help="start from a finished run's ckpt/latest.pt (skips imitation; its imitation snapshot and pool come along)")
     p.add_argument("--gamma", type=float, default=1.0)
     p.add_argument("--deal-copies", type=int, default=4, help="self-play: play every hand this many times from the same state (1 = off)")
     p.add_argument("--deal-beta", type=float, default=0.5,
@@ -86,7 +90,7 @@ def parse_args(argv=None):
     p.add_argument("--precision", choices=["bf16", "fp16", "tf32"], default="bf16")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--no-build", action="store_true")
-    for k in ["channels", "blocks", "neck", "globalHidden", "hidden", "valueHidden"]:
+    for k in ["channels", "blocks", "neck", "globalHidden", "hidden", "valueHidden", "danger"]:
         p.add_argument(f"--{k}", type=int, default=None)
     return p.parse_args(argv)
 
@@ -190,8 +194,9 @@ class Buffer:
     successor value are known (the seat's next request arrived, or its episode
     ended); incomplete ones (one per live seat at most) carry into the next update."""
 
-    def __init__(self, cap: int, obs_dim: int, slots: int, aux_dim: int, device, store_dtype):
+    def __init__(self, cap: int, obs_dim: int, slots: int, aux_dim: int, device, store_dtype, danger_dim: int = 0):
         self.cap, self.device = cap, device
+        self.danger = torch.zeros(cap, danger_dim, device=device, dtype=torch.float16) if danger_dim else None
         self.obs = torch.zeros(cap, obs_dim, device=device, dtype=store_dtype)
         self.mask = torch.zeros(cap, slots, device=device, dtype=torch.bool)
         self.aux = torch.zeros(cap, aux_dim, device=device, dtype=torch.float16) if aux_dim else None
@@ -211,7 +216,7 @@ class Buffer:
         self.open: dict[tuple, int] = {}  # stream (worker, env, seat) -> its newest decision
         self.episode: dict[tuple, list[int]] = {}  # stream -> this episode's decisions in this buffer
 
-    def add(self, streams, obs, mask, aux, action, logp, value) -> np.ndarray:
+    def add(self, streams, obs, mask, aux, action, logp, value, danger=None) -> np.ndarray:
         k = len(streams)
         if self.n + k > self.cap:
             raise RuntimeError("rollout buffer full — raise its capacity")
@@ -220,6 +225,8 @@ class Buffer:
         self.mask[self.n : self.n + k] = mask
         if self.aux is not None and aux is not None:
             self.aux[self.n : self.n + k] = aux
+        if self.danger is not None and danger is not None:
+            self.danger[self.n : self.n + k] = danger
         self.action[at], self.logp[at], self.value[at] = action, logp, value
         self.reward[at] = 0
         self.done[at] = False
@@ -288,6 +295,8 @@ class Buffer:
             other.mask[:k] = self.mask[t]
             if self.aux is not None and other.aux is not None:
                 other.aux[:k] = self.aux[t]
+            if self.danger is not None and other.danger is not None:
+                other.danger[:k] = self.danger[t]
             for name in ("action", "logp", "value", "reward", "next_value", "done", "complete", "has_deal"):
                 getattr(other, name)[:k] = getattr(self, name)[keep]
         other.succ[:k] = -1
@@ -403,9 +412,12 @@ class Trainer:
         probe = EnvClient()
         self.spec = probe.spec
         probe.close()
-        over = {k: getattr(args, k) for k in ["channels", "blocks", "neck", "globalHidden", "hidden", "valueHidden"] if getattr(args, k)}
+        over = {k: getattr(args, k) for k in ["channels", "blocks", "neck", "globalHidden", "hidden", "valueHidden", "danger"] if getattr(args, k) is not None}
+        if args.danger_coef <= 0:
+            over["danger"] = 0
         self.cfg = NetConfig.from_spec(self.spec, **over)
         self.aux_dim = self.spec["auxDim"] if args.aux_coef > 0 else 0
+        self.danger_dim = self.spec["dangerDim"] if self.cfg.danger else 0
         self.model = HkNet(self.cfg, aux_dim=self.aux_dim).to(self.device)
         self.opt = torch.optim.Adam(self.model.parameters(), lr=args.bc_lr, eps=1e-5, fused=self.device.type == "cuda")
         self.update = 0
@@ -413,14 +425,17 @@ class Trainer:
         self.pool: list[tuple[int, dict]] = []  # (update, state_dict on CPU)
         self.bc_state: dict | None = None
         self.rng = random.Random(args.seed)
+        self.init_source: dict | None = None
         if args.resume:
             self._load()
+        elif args.init_from:
+            self._init_from(args.init_from)
         torch.manual_seed(args.seed + self.update)
 
         self.D, self.S = self.spec["obsDim"], self.spec["numSlots"]
         cap = args.samples + args.workers * args.envs * 8 + 4096
         # Two rollout buffers: one fills while the other trains (in a background thread).
-        self.bufs = [Buffer(cap, self.D, self.S, self.aux_dim, self.device, self.prec.store) for _ in range(2)]
+        self.bufs = [Buffer(cap, self.D, self.S, self.aux_dim, self.device, self.prec.store, self.danger_dim) for _ in range(2)]
         self.cur = 0
         self.job: Job | None = None
         self.fresh: dict | None = None  # weights the training thread just produced, for the acting copy
@@ -437,7 +452,7 @@ class Trainer:
         self.opponent_update = -1
         self.infer = Inference(self.cfg, self.device, self.prec.store, self.model.state_dict())
         with open(os.path.join(self.run_dir, "config.json"), "w") as f:
-            json.dump({"args": vars(args), "net": asdict(self.cfg), "spec": {k: self.spec[k] for k in ["obsDim", "numSlots", "auxDim", "encoderVersion", "actionSpaceVersion"]}}, f, indent=1)
+            json.dump({"args": vars(args), "init": self.init_source, "net": asdict(self.cfg), "spec": {k: self.spec[k] for k in ["obsDim", "numSlots", "auxDim", "encoderVersion", "actionSpaceVersion"]}}, f, indent=1)
         print(f"run {self.run_dir}\nnet {param_count(self.model):,} parameters, device {self.device}, {args.precision}")
 
     @property
@@ -482,6 +497,29 @@ class Trainer:
         )
         os.replace(path + ".tmp", path)
 
+    def _init_from(self, path: str) -> None:
+        """Warm start: a finished run's weights (adapted to this network), its imitation snapshot and
+        its snapshot pool. Imitation is skipped — the network is already trained."""
+        ck = torch.load(path, map_location="cpu", weights_only=False)
+        src = NetConfig(**ck["net"])
+        mine = asdict(self.cfg)
+        for k, v in asdict(src).items():
+            if k != "danger" and mine[k] != v:
+                raise SystemExit(f"--init-from: {k} is {v} there and {mine[k]} here")
+        self.model.load_state_dict(adapt_state(ck["model"], self.model))
+
+        def fit(sd: dict) -> dict:
+            # Opponent snapshots: only the tensors they had (adapted); a new danger head stays
+            # unset, which is harmless since its inputs to the policy are zero.
+            adapted = adapt_state(sd, self.model)
+            return {k: adapted[k].cpu() for k in sd if not k.startswith("aux.") and k in adapted}
+
+        self.bc_state = fit(ck["bc_state"]) if ck.get("bc_state") else fit(ck["model"])
+        self.pool = [(u, fit(sd)) for u, sd in ck["pool"]][-self.args.pool_size :]
+        self.args.bc_updates = 0
+        self.init_source = {"from": os.path.abspath(path), "update": ck["update"]}
+        print(f"starting from {path} (update {ck['update']}); imitation skipped")
+
     def _load(self) -> None:
         ck = torch.load(os.path.join(self.run_dir, "ckpt", "latest.pt"), map_location="cpu", weights_only=False)
         self.cfg = NetConfig(**ck["net"])
@@ -520,6 +558,7 @@ class Trainer:
             "rewardScale": self.args.reward_scale,
             "episode": self.args.episode,
             "aux": self.aux_dim > 0,
+            "danger": self.danger_dim > 0,
             # Copies of each deal for self-play (and past-self) games; imitation games don't need them.
             "dealCopies": self.args.deal_copies if role in ("self", "pool") and self.args.episode == "hand" else 1,
         }
@@ -613,7 +652,10 @@ class Trainer:
             aux = None
             if self.aux_dim and all(b.aux is not None for _, b in live):
                 aux = torch.from_numpy(np.concatenate([b.aux for _, b in live])[learn]).to(self.device, torch.float16)
-            self.buf.add(streams, obs[li], mask[li], aux, a, logp, value)
+            danger = None
+            if self.danger_dim and all(b.danger is not None for _, b in live):
+                danger = torch.from_numpy(np.concatenate([b.danger for _, b in live])[learn]).to(self.device, torch.float16)
+            self.buf.add(streams, obs[li], mask[li], aux, a, logp, value, danger)
         others = np.flatnonzero(who == POOL)
         if len(others):
             oi = torch.from_numpy(others).to(self.device)
@@ -695,7 +737,7 @@ class Trainer:
                 if len(mb) < a.minibatch // 4:
                     continue
                 with self.prec.autocast():
-                    logits, v, aux = model(buf.obs[mb])
+                    logits, v, aux, dng = model.outputs(buf.obs[mb])
                 logits = masked_logits(logits, buf.mask[mb])
                 logp_all = F.log_softmax(logits, -1)
                 logp = logp_all.gather(1, act[mb, None]).squeeze(-1)
@@ -721,6 +763,20 @@ class Trainer:
                     aux_loss = F.binary_cross_entropy_with_logits(aux.float(), buf.aux[mb].float())
                     loss = loss + a.aux_coef * aux_loss
                     logs["aux_loss"].append(float(aux_loss.detach()))
+                if dng is not None and buf.danger is not None:
+                    lab = buf.danger[mb].float().view(-1, 4, 34)
+                    dng = dng.float()
+                    ron_loss = F.binary_cross_entropy_with_logits(dng[:, :3], lab[:, :3])
+                    cost_loss = F.smooth_l1_loss(dng[:, 3], lab[:, 3])
+                    loss = loss + a.danger_coef * (ron_loss + cost_loss)
+                    logs["danger_ron_loss"].append(float(ron_loss.detach()))
+                    logs["danger_cost_loss"].append(float(cost_loss.detach()))
+                    with torch.no_grad():
+                        # Calibration at a glance: mean predicted chance on real dangers vs on safe kinds.
+                        prob, pos = torch.sigmoid(dng[:, :3]), lab[:, :3] > 0.5
+                        if pos.any():
+                            logs["danger_p_on_ron"].append(float(prob[pos].mean()))
+                        logs["danger_p_on_safe"].append(float(prob[~pos].mean()))
                 self.opt.zero_grad(set_to_none=True)
                 self.prec.scaler.scale(loss).backward()
                 self.prec.scaler.unscale_(self.opt)
@@ -1005,7 +1061,7 @@ class Trainer:
         if self.phase == "ppo" and a.eval_every:
             done = os.path.join(self.run_dir, "evals.jsonl")
             seen = [json.loads(l) for l in open(done, encoding="utf-8")] if os.path.exists(done) else []
-            if not any(e["vs"] == "heuristic" and e["update"] == a.bc_updates for e in seen):
+            if not self.init_source and not any(e["vs"] == "heuristic" and e["update"] == a.bc_updates for e in seen):
                 self.start_eval("bc_heuristic")
             if self.update > a.bc_updates and not any(e["update"] == self.update for e in seen):
                 self.start_eval("heuristic")
@@ -1108,6 +1164,9 @@ class Trainer:
             line += f" | acc {logs.get('bc_acc_fresh', 0):.3f}"
         else:
             line += f" | ent {logs.get('entropy', 0):.2f} kl {logs.get('kl', 0):.3f} clip {logs.get('clipfrac', 0):.2f} ev {logs.get('explained_var', 0):.2f}"
+        if "danger_p_on_ron" in logs:
+            # The danger head's mean predicted chance on discards that would deal in vs on safe ones.
+            line += f" | danger {logs['danger_p_on_ron']:.2f}/{logs.get('danger_p_on_safe', 0):.3f}"
         if "win_rate" in rec:
             line += f" | win {rec['win_rate']:.3f} deal-in {rec['deal_in_rate']:.3f} faan {rec['avg_win_faan']:.1f}"
         line += f" | ETA {eta / 3600:.1f}h"

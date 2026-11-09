@@ -86,6 +86,11 @@ The network only ever sees what its seat could see at a real table.
      - clip 0.2, early stop past 1.5 × the 0.03 KL target, Huber value loss;
      - entropy bonus 0.01 → 0.002, grad clip 1.0, aux weight 0.1;
      - Adam 3e-4 with cosine decay to 1e-4. hk1 decayed to 3e-5 and the policy all but stopped moving after update ~4000 (KL ≈ 0.001).
+   - **Danger head (`--danger 32`, `--danger-coef 0.5`):** for every tile kind, the network predicts whether next / across / prev could win on it if it discarded that kind now (minimum faan included), and what that would cost it (截糊 and 包 as the engine settles them).
+     - It is trained on exact labels from the hidden hands, computed by `dealInCost` / `canRonOn` in the engine (labels only; the network still sees just its seat's view). Every decision gets a target, unlike deal-ins in the reward, which are rare and noisy.
+     - Its four outputs feed the per-kind policy term, so the discard choice reads them directly.
+     - The console shows its mean predicted chance on discards that would deal in vs on safe ones (`danger 0.xx/0.0xx`).
+     - Why: in hk1's self-play, 70% of the hard network's deal-ins had a safe tile that kept its shanten, worth up to ~1.5 points per seat per hand (an upper bound: it ignores acceptance and hand value).
    - **Weight averaging (`--ema 0.99`):** an exponential moving average of the weights over self-play updates (a window of roughly 100 updates). It is exported as `policies/update_NNNNN_ema.hknet` beside each snapshot, measured against the current network at every evaluation, and kept in checkpoints.
    - **Cost:** with these defaults an update takes several times longer than hk1's ~3 s. Pick `--updates` with that in mind; I'd measure the first few updates before committing to a length.
 3. **Evaluation (measurement only; it never feeds training).**
@@ -99,6 +104,10 @@ The network only ever sees what its seat could see at a real table.
    - The update-100 snapshot is also played against the heuristic once, to give the imitation baseline.
    - On `--resume`, the restored network is evaluated right away.
    - With `--ema`, the averaged weights play the current ones.
+
+**Warm start (`--init-from training/runs/hk1/ckpt/latest.pt`):** begin from a finished run instead of from imitation.
+- It takes the run's weights, its update-100 imitation snapshot (for the "vs imitation" evaluation) and its opponent pool, and skips imitation.
+- A network trained without a danger head gains one whose inputs to the policy start at zero, so it begins playing exactly like the source and learns to use the head.
 
 **Averaging finished checkpoints** (no training): `training/hk/average.py` averages a run's saved snapshots (`--ckpt …/latest.pt --last N`, full precision) or any `.hknet` files. Measure the result with `evaluate.py`.
 

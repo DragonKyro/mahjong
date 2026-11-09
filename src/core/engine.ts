@@ -613,6 +613,54 @@ export function isFuriten(s: MatchState, seat: number): boolean {
   return seatWaits(s, seat).some((k) => gone.has(k));
 }
 
+/** The copy of `kind` that `from` would throw: one from its hand, else one nobody can see (so 五子包生 reads right). */
+function throwableId(s: MatchState, from: number, kind: Kind): TileId {
+  const own = s.hand.players[from]!.hand.find((t) => kindOf(t) === kind);
+  if (own !== undefined) return own;
+  const seen = new Set(s.hand.players.flatMap((p) => [...p.discards, ...p.melds.flatMap((m) => m.tiles)]));
+  const ids = [kind * 4, kind * 4 + 1, kind * 4 + 2, kind * 4 + 3];
+  return ids.find((t) => !seen.has(t)) ?? ids[0]!;
+}
+
+const ronCtx = (s: MatchState, seat: number, from: number, kind: Kind): WinCtx => ({
+  seat,
+  from,
+  tile: throwableId(s, from, kind),
+  selfDraw: false,
+  robbingKong: false,
+  flowerWin: null,
+});
+
+/**
+ * Could `seat` win (minimum faan and all) on a tile of `kind` discarded by
+ * `from` right now? Reads `seat`'s hidden hand: training labels and analysis
+ * only — never a player's decision.
+ */
+export function canRonOn(s: MatchState, seat: number, from: number, kind: Kind): boolean {
+  if (seat === from || s.hand.players[seat]!.hand.length % 3 !== 1) return false;
+  return legalWin(s, ronCtx(s, seat, from, kind)) !== null;
+}
+
+/**
+ * What `from` discarding a tile of `kind` right now would hand out: the seats
+ * that could win on it, the ones that would (after 截糊 / multi-win, as
+ * tryResolve picks them, if all of them claimed), and what `from` would pay
+ * them (包 included). Reads every hand — training labels and analysis only.
+ */
+export function dealInCost(s: MatchState, from: number, kind: Kind): { can: number[]; winners: number[]; cost: number } {
+  const variant = variantOf(s);
+  const can = [1, 2, 3].map((d) => (from + d) % 4).filter((seat) => canRonOn(s, seat, from, kind));
+  if (can.length === 0) return { can, winners: [], cost: 0 };
+  const winners = variant.multiWin(rulesOf(s)) === 'head' ? can.slice(0, 1) : can;
+  let cost = 0;
+  for (const seat of winners) {
+    const input = buildWinInput(s, ronCtx(s, seat, from, kind));
+    const score = variant.evaluate(input, rulesOf(s))!;
+    cost -= variant.settle(input, score, rulesOf(s)).deltas[from]!;
+  }
+  return { can, winners, cost };
+}
+
 /** The score a winning tile would give `seat` right now (UI hints). */
 export function previewWin(s: MatchState, seat: number, tile: TileId, selfDraw: boolean): WinScore | null {
   return legalWin(s, { seat, from: selfDraw ? null : s.hand.turn, tile, selfDraw, robbingKong: false, flowerWin: null });

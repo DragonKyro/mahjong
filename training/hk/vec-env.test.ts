@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { pendingSeats } from '@/core/engine';
+import { applyAction, pendingSeats } from '@/core/engine';
 import { teacherAction } from '@/core/nn/teacher';
 import { Rng } from '@/core/rng';
+import { kindOf } from '@/core/tiles';
 import { NUM_SLOTS, legalMask, slotOf } from '@/core/nn/hkActions';
 import { OBS_DIM, observe } from '@/core/nn/hkEncode';
-import { HkVecEnv, type VecBatch } from './vec-env';
+import { DANGER_DIM, HkVecEnv, type VecBatch } from './vec-env';
 
 function randomActions(b: VecBatch, rng: Rng): number[] {
   const out: number[] = [];
@@ -147,5 +148,41 @@ describe('HK vec env', () => {
       b = env.step(b.hint);
     }
     expect(seen).toBeGreaterThan(0);
+  });
+
+  it('danger labels: who could win on each discard and what it would cost, exactly as the engine plays it out', () => {
+    const env = new HkVecEnv({ numEnvs: 8, seed: 21, seats: ['teacher', 'teacher', 'teacher', 'teacher'], danger: true, rewardScale: 1 });
+    let b = env.reset();
+    let checked = 0;
+    let positive = 0;
+    for (let step = 0; step < 1500 && positive < 15; step++) {
+      for (let j = 0; j < b.n; j++) {
+        const s = env.stateOf(b.env[j]!)!;
+        const seat = b.seat[j]!;
+        if (s.hand.phase !== 'act' || s.hand.turn !== seat) continue;
+        const label = b.danger!.subarray(j * DANGER_DIM, (j + 1) * DANGER_DIM);
+        const tried = new Set<number>();
+        for (const t of s.hand.players[seat]!.hand) {
+          const k = kindOf(t);
+          if (tried.has(k)) continue;
+          tried.add(k);
+          // Play the discard out: everyone who can win claims, the rest pass.
+          let x = applyAction(s, { type: 'discard', seat, tile: t });
+          const can = x.hand.phase === 'claim' ? [1, 2, 3].filter((r) => x.hand.claim!.options[(seat + r) % 4]!.some((c) => c.type === 'win')) : [];
+          const before = x.scores[seat]!;
+          for (let o = 0; o < 4 && can.length; o++) {
+            if (x.hand.phase !== 'claim' || x.hand.claim!.responses[o] !== null) continue;
+            x = applyAction(x, { type: 'claim', seat: o, claim: can.includes((o - seat + 4) % 4) ? { type: 'win' } : { type: 'pass' } });
+          }
+          for (let r = 1; r < 4; r++) expect(label[(r - 1) * 34 + k], `kind ${k} rel ${r}`).toBe(can.includes(r) ? 1 : 0);
+          expect(label[3 * 34 + k]).toBeCloseTo(can.length ? before - x.scores[seat]! : 0, 6);
+          checked++;
+          if (can.length) positive++;
+        }
+      }
+      b = env.step(b.hint);
+    }
+    expect(checked).toBeGreaterThan(1000);
+    expect(positive).toBeGreaterThanOrEqual(15);
   });
 });

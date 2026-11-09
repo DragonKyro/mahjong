@@ -30,7 +30,7 @@
 // the deal. The match then carries on from one copy's result (chosen by the
 // hand count, not by how it went), identically in every copy.
 
-import { applyAction, handCounts, isFinalHand, pendingSeats, setsNeeded, createMatch, type Action, type AiLevel, type MatchState } from '@/core/engine';
+import { applyAction, canRonOn, dealInCost, handCounts, isFinalHand, pendingSeats, setsNeeded, createMatch, type Action, type AiLevel, type MatchState } from '@/core/engine';
 import { shanten, waits } from '@/core/hand';
 import { teacherAction } from '@/core/nn/teacher';
 import { decodeSlot, legalMask, NUM_SLOTS, slotOf } from '@/core/nn/hkActions';
@@ -64,6 +64,8 @@ export interface VecEnvOptions {
   autoForced: boolean;
   /** Auxiliary targets with every request: the opponents' hidden hands and waits. Training labels only — never part of the observation. */
   aux: boolean;
+  /** Danger targets with every request: for each kind, who could win on it if this seat discarded it now, and what that would cost. Training labels only. */
+  danger: boolean;
   /** Give up on a match after this many actions. */
   maxActions: number;
   /** Envs per deal group (1 = no copies). See above. */
@@ -83,6 +85,7 @@ export const DEFAULT_OPTIONS: VecEnvOptions = {
   rules: {},
   autoForced: true,
   aux: false,
+  danger: false,
   maxActions: 20_000,
   dealCopies: 1,
 };
@@ -90,6 +93,12 @@ export const DEFAULT_OPTIONS: VecEnvOptions = {
 /** Per opponent (next, across, prev): concealed counts / 4 (34), ready (1), waits (34). */
 export const AUX_PER_SEAT = 69;
 export const AUX_DIM = 3 * AUX_PER_SEAT;
+/**
+ * Per kind k (34 each): could next / across / prev win if I discarded k now
+ * (minimum faan and all), then what I'd pay (points / rewardScale; 截糊 and 包
+ * as the engine settles them).
+ */
+export const DANGER_DIM = 4 * 34;
 
 export interface SeatStats {
   wins: number;
@@ -146,6 +155,7 @@ export interface VecBatch {
   val: Float32Array;
   mask: Uint8Array;
   aux: Float32Array | null;
+  danger: Float32Array | null;
   done: Done[];
   episodes: Episode[];
   /** Every env is idle (maxMatches reached and all finished). */
@@ -190,6 +200,24 @@ function auxTargets(s: MatchState, seat: number, out: Float32Array, at: number):
       for (const k of waits(c, sets, shape)) out[base + 35 + k] = 1;
     }
   }
+}
+
+function dangerTargets(s: MatchState, seat: number, scale: number, out: Float32Array, at: number): void {
+  const shape = { sevenPairs: (s.config.rules as HkRules).sevenPairs, thirteenOrphans: true };
+  const risky = new Set<number>();
+  for (let r = 1; r < 4; r++) {
+    const o = (seat + r) % 4;
+    const c = handCounts(s, o);
+    const sets = setsNeeded(s, o);
+    // Only a ready hand can win on a discard, and only on its waits.
+    if (c.reduce((a, b) => a + b, 0) % 3 !== 1 || shanten(c, sets, shape) !== 0) continue;
+    for (const k of waits(c, sets, shape)) {
+      if (!canRonOn(s, o, seat, k)) continue;
+      out[at + (r - 1) * 34 + k] = 1;
+      risky.add(k);
+    }
+  }
+  for (const k of risky) out[at + 3 * 34 + k] = dealInCost(s, seat, k).cost / scale;
 }
 
 function seatStats(s: MatchState): SeatStats[] {
@@ -439,6 +467,7 @@ export class HkVecEnv {
     const val = new Float32Array(total);
     const mask = new Uint8Array(n * NUM_SLOTS);
     const aux = this.opts.aux ? new Float32Array(n * AUX_DIM) : null;
+    const danger = this.opts.danger ? new Float32Array(n * DANGER_DIM) : null;
     const reward: number[] = [];
     let at = 0;
     rows.forEach(({ e, r }, j) => {
@@ -451,6 +480,7 @@ export class HkVecEnv {
       }
       mask.set(r.mask, j * NUM_SLOTS);
       if (aux) auxTargets(e.s!, r.seat, aux, j * AUX_DIM);
+      if (danger) dangerTargets(e.s!, r.seat, this.opts.rewardScale, danger, j * DANGER_DIM);
       reward.push(e.accrued[r.seat]!);
       e.accrued[r.seat] = 0;
     });
@@ -467,6 +497,7 @@ export class HkVecEnv {
       val,
       mask,
       aux,
+      danger,
       done: this.done,
       episodes: this.episodes,
       finished: this.envs.every((e) => !e.s),

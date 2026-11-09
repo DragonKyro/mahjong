@@ -40,6 +40,7 @@ class Batch:
     val: np.ndarray  # [nnzTotal] float32 value
     mask: np.ndarray  # [n, numSlots] uint8
     aux: np.ndarray | None  # [n, auxDim] float32 training labels, or None
+    danger: np.ndarray | None  # [n, dangerDim] float32 training labels (who could win on each discard, its cost), or None
     done: list[dict] = field(default_factory=list)
     episodes: list[dict] = field(default_factory=list)
     finished: bool = False
@@ -87,6 +88,11 @@ class EnvClient:
         if h["aux"]:
             aux = np.frombuffer(p, "<f4", n * aux_dim, off).reshape(n, aux_dim)
             off += 4 * n * aux_dim
+        danger = None
+        if h.get("danger"):
+            dd = self.spec["dangerDim"]
+            danger = np.frombuffer(p, "<f4", n * dd, off).reshape(n, dd)
+            off += 4 * n * dd
         idx = np.frombuffer(p, "<u2", total, off)
         off += 2 * total
         nnz = np.frombuffer(p, "<u2", n, off)
@@ -105,6 +111,7 @@ class EnvClient:
             val=val,
             mask=mask,
             aux=aux,
+            danger=danger,
             done=h["done"],
             episodes=h["episodes"],
             finished=h["finished"],
