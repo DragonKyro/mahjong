@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { chooseAction } from '../ai';
 import { createMatch, createRiggedMatch, pendingSeats, tryApply, applyAction, type Action, type Claim, type MatchConfig, type MatchState } from '../engine';
 import { Rng } from '../rng';
 import { isBonus, kindOf, parseKinds, type Kind } from '../tiles';
 import { DEFAULT_HK_RULES } from '../variants/hk';
+import { teacherAction } from './teacher';
 import { ACTION_SPACE_VERSION, NUM_SLOTS, SLOT, SLOT_NAMES, decodeSlot, legalMask, slotOf } from './hkActions';
 import { ENCODER_VERSION, GLOBAL_DIM, KINDS, NUM_PLANES, OBS_DIM, encode, featureLayout, observe, seatView } from './hkEncode';
 import { DEFAULT_NET_CONFIG, loadHkNet, netAction, readHkNet, tensorShapes, writeHkNet, type DType, type HkNetConfig } from './hkNet';
@@ -23,7 +23,7 @@ function sampleStates(seeds: number[], every: number, cap = 900): MatchState[] {
     let s = createMatch(config(seed));
     for (let n = 0; !s.over && n < cap; n++) {
       if (n % every === 0) out.push(s);
-      s = applyAction(s, chooseAction(s, pendingSeats(s)[0]!)!);
+      s = applyAction(s, teacherAction(s, pendingSeats(s)[0]!)!);
     }
   }
   return out;

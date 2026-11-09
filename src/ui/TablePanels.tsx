@@ -367,6 +367,7 @@ export function SidePanel({ s }: { s: MatchState }) {
   const setSpeed = useGame((x) => x.setSpeed);
   const leaveSolo = useGame((x) => x.leave);
   const notice = useGame((x) => x.notice);
+  const aiStatus = useGame((x) => x.aiStatus);
   const setNotice = useGame((x) => x.setNotice);
   const hints = useGame((x) => x.hints);
   const setHints = useGame((x) => x.setHints);
@@ -386,6 +387,8 @@ export function SidePanel({ s }: { s: MatchState }) {
   return (
     <aside className="side-panel">
       {mode === 'online' && !connected && <div className="banner warn">Reconnecting…</div>}
+      {aiStatus === 'loading' && <div className="banner">Loading the computer players…</div>}
+      {aiStatus === 'failed' && <div className="banner warn">Couldn't load the computer players — retrying…</div>}
       {notice && <div className="banner">{notice}</div>}
       <section>
         <h4>

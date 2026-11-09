@@ -2,8 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { chooseAction } from '@/core/ai';
 import { checksum, createMatch, pendingSeats, type MatchConfig } from '@/core/engine';
 import { DEFAULT_HK_RULES } from '@/core/variants/hk';
+import { useTeacherForHk } from '@/core/nn/teacher';
 import type { LoggedAction, StartRecord } from './room';
 import { MatchSync } from './sync';
+
+// HK computer players are networks the app loads; tests play HK with the heuristic instead.
+useTeacherForHk();
 
 /** An in-memory action log with the database's write-once slots and async delivery. */
 class FakeLog {

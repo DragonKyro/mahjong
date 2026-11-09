@@ -13,6 +13,7 @@
     "typecheck": "tsc",
     "fix-lock": "node scripts/fix-lockfile.mjs",
     "train:build": "vite build --config training/vite.config.ts",
+    "ship-policies": "node scripts/ship-policies.mjs",
     "deploy:rules": "npx -y firebase-tools@latest deploy --only database"
   },
   "dependencies": {

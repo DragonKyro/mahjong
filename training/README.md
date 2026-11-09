@@ -36,6 +36,20 @@ Outputs go to `training/runs/<name>/`:
 | `ckpt/latest.pt` | Model, optimiser, snapshot pool, for `--resume` |
 | `config.json` | The run's settings |
 
+## What ships
+
+The game's three HK levels are snapshots of run `hk1`, copied to `public/policies/hk/` by `npm run ship-policies`:
+
+| Level | Update | vs the final network | vs the heuristic |
+|---|---|---|---|
+| Hard | 5000 | 0 | +89 ± 6 |
+| Normal | 1000 | −34 ± 9 | +81 ± 6 |
+| Easy | 200 | −78 ± 7 | +50 ± 6 |
+
+Points per match, 512 paired-deal matches each. Updates 300–1000 are one strength plateau and 1500–3000 the next, so the levels were chosen from different tiers, in even steps of 35–45 points (well outside the noise). Updates 4500 and 5000 are tied.
+
+The heuristic HK player (`src/core/nn/teacher.ts`) is no longer the game's computer player. It stays as the imitation teacher, the benchmark opponent in the reports, and a test driver.
+
 ## Fair play
 
 The network only ever sees what its seat could see at a real table.

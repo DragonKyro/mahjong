@@ -1,4 +1,10 @@
-// Hong Kong Old Style AI.
+// The heuristic Hong Kong Old Style player — no longer the game's computer
+// player (HK is played by the trained networks, see src/core/ai/neural.ts), but
+// still used as:
+//   - the imitation teacher for the first updates of a training run,
+//   - the benchmark opponent ("vs heuristic" in training reports),
+//   - a cheap, deterministic driver for tests that need whole HK matches.
+// It is not imported by the app, so it isn't bundled into the game.
 //
 // What matters in HK: every win needs the faan minimum (3 by default), and
 // most hands only just reach it — 門前清, 自摸, 無花 / seat flowers, a value
@@ -10,9 +16,12 @@
 // dealing in is cheap: defence only kicks in for a far-off hand against
 // someone showing three melds (measured: broader folding lost points).
 
-import type { Action, Claim } from '../engine';
+import type { AiLevel } from '../engine';
+import { claimOptions, type Action, type Claim, type MatchState } from '../engine';
+import { isOpen, makeCtx, standardClaim, standardTurn, suitStats, tripletProgress, valuePongs, type Ctx, type Plan, type Shape } from '../ai/kit';
+import { registerNeural, type NeuralPlayer } from '../ai/neural';
+import { kindOf } from '../tiles';
 import type { HkRules } from '../variants/hk';
-import { isOpen, standardClaim, standardTurn, suitStats, tripletProgress, valuePongs, type Ctx, type Plan, type Shape } from './kit';
 
 function potential(ctx: Ctx, shape: Shape): number {
   const { counts, melds } = shape;
@@ -58,4 +67,32 @@ export function hkTurn(ctx: Ctx): Action {
 
 export function hkClaim(ctx: Ctx, options: Claim[]): Claim {
   return standardClaim(ctx, hkPlan(ctx), options, 0.8);
+}
+
+/** The answer to whatever the engine is waiting on from `seat` (the seat's `level` picks easy / normal / hard), or null. */
+export function teacherAction(s: MatchState, seat: number): Action | null {
+  const h = s.hand;
+  if (s.over) return null;
+  if (h.phase === 'end') return h.ready[seat] ? null : { type: 'ready', seat };
+  if (h.phase === 'claim') {
+    const options = claimOptions(s, seat);
+    return options.length === 0 ? null : { type: 'claim', seat, claim: hkClaim(makeCtx(s, seat), options) };
+  }
+  if (h.phase === 'act' && h.turn === seat) return hkTurn(makeCtx(s, seat));
+  return null;
+}
+
+export const teacherPlayer: NeuralPlayer = {
+  meta: { teacher: true },
+  act: teacherAction,
+  hint(s, seat) {
+    if (s.hand.phase !== 'act' || s.hand.turn !== seat) return null;
+    const a = hkTurn(makeCtx(s, seat));
+    return a.type === 'discard' ? kindOf(a.tile) : null;
+  },
+};
+
+/** Play every HK computer seat with the heuristic (tests and tools; the game loads networks instead). */
+export function useTeacherForHk(): void {
+  for (const level of ['easy', 'normal', 'hard'] as AiLevel[]) registerNeural('hk', level, teacherPlayer);
 }

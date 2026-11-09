@@ -18,9 +18,9 @@ src/core/            pure TS, no React/DOM — runs under Node
   rng.ts             mulberry32 seeded RNG
   hand.ts            decomposition, shanten, waits, discard acceptance (variant-agnostic: `sets` param)
   engine.ts          the table engine: MatchState + applyAction reducer, legal-move queries, views
-  ai/                one heuristic AI per variant (hk, taiwan, riichi, american) on a shared kit; index.ts dispatches + UI hints; bench.test.ts (BENCH=1)
+  ai/                heuristic AIs for taiwan, riichi, american on a shared kit; index.ts dispatches (HK → the networks) + UI hints; neural.ts (registry of network players per variant/level); playout.ts (test support); bench.test.ts (BENCH=1)
   training.ts        discard puzzles
-  nn/                neural HK agent: hkEncode (seatView → planes + globals, ENCODER_VERSION), hkActions (78 slots, legalMask, decodeSlot, slotOf, ACTION_SPACE_VERSION), hkNet (TS forward pass, the compact `.hknet` file mahjong/hknet@2 with int8 weights, netAction)
+  nn/                neural HK agent: hkEncode (seatView → planes + globals, ENCODER_VERSION), hkActions (78 slots, legalMask, decodeSlot, slotOf, ACTION_SPACE_VERSION), hkNet (TS forward pass, the compact `.hknet` file mahjong/hknet@2 with int8 weights, netAction), hkPlayer (network → NeuralPlayer, greedy + cached hint), teacher (the old HK heuristic AI: imitation teacher, benchmark opponent, test driver — not bundled in the app)
   variants/index.ts  Variant interface (features + hooks), registry, WinInput, doraFromIndicator
   variants/hk.ts     HK Old Style: HkRules, FAAN_TABLE, evaluateHk, settleHk, liability
   variants/taiwan.ts Taiwanese 16-tile: TaiwanRules, TAI_TABLE, evaluateTaiwan, settleTaiwan (dealer tai per payer)
@@ -28,9 +28,10 @@ src/core/            pure TS, no React/DOM — runs under Node
   variants/american.ts American: HOUSE_CARD, card notation to FORMS, matches / distance, claim / expose / joker-swap hooks, evaluate / settle
 src/net/             room.ts (wire types, transport interface, identity, room codes/links),
                      firebaseRoom.ts (Firebase transport, lazy), sync.ts (MatchSync: log ↔ state)
-src/store/           gameStore (match + AI driver), netStore (rooms), trainingStore
+src/store/           gameStore (match + AI driver; loads the networks a match needs and holds AI moves until they're in), policies (fetches public/policies/<variant>/<level>.hknet, lazy chunk), netStore (rooms), trainingStore
 src/ui/              App, Home, RulesForms (per-variant editors), Table, TablePanels, Lobby, Training, RulesPage (tab per variant), Tile, flip.ts (move animation), styles.css, devDemo (dev only)
-scripts/             fix-lockfile.mjs, merge-db-rules.mjs
+public/policies/hk/  easy / normal / hard .hknet — the shipped HK networks (training updates 200 / 1000 / 5000 of run hk1)
+scripts/             fix-lockfile.mjs, merge-db-rules.mjs, ship-policies.mjs
 training/            vite.config.ts (bundles → training/dist), environment.yml (conda `train`), README.md (fair play, schedule, speed)
   hk/                vec-env.ts (+ test) + env-server.ts (Node; JSON header + binary sparse payload), model.py (PyTorch twin of hkNet + aux heads, export_net / read_net), env_client.py, train.py (imitation → PPO self-play), evaluate.py (head-to-head on fresh deals, ± SE), test_model.py
 ```
@@ -76,15 +77,14 @@ Values follow Wikipedia "Hong Kong mahjong scoring rules": 清一色 7, 小三�
 
 ## AI notes
 
-`src/core/ai/` has **one heuristic AI per variant**, built on a shared toolkit:
+**Hong Kong is played by trained networks**, not a heuristic: `chooseAction` looks up the seat's level in the registry in `ai/neural.ts` (`NEURAL_VARIANTS = {hk}`) and throws if that network isn't loaded. The app loads them (`store/policies.ts`, fetched from `public/policies/hk/`) when a match starts — `gameStore.prepare()` — and `schedule()` holds computer moves until the seat's network is in; the hint network (hard) loads when hints are on. Tests that need whole HK matches call `useTeacherForHk()` (registers the heuristic from `nn/teacher.ts` for every level). To ship different snapshots: `npm run ship-policies -- --run hk1 --easy 200 --normal 1000 --hard 5000`, and update `shipped.test.ts` (the expected updates). The other variants keep one heuristic AI each, built on a shared toolkit in `src/core/ai/`:
 - `index.ts` dispatches by variant (and holds the UI hints: `suggestDiscard`, `waitInfo`, `nearestHands`).
 - `kit.ts` — hand reading, `evaluate` (shanten, acceptance, and value through the variant's `Plan`), `threats` / `danger`, `claimUtility`, and the `standardTurn` / `standardClaim` skeletons with hooks (kong, defence weight, per-candidate bonus, `finish`). Hard adds a one-draw lookahead (`readyQuality`) at one-away.
-- `hk.ts` — plans for the faan minimum (門前清, 無花 / seat flowers, value pongs, flush, all pongs); folds only a hopeless hand against three melds (半銃 makes dealing in cheap).
 - `taiwan.ts` — speed first (no minimum, linear tai); values concealment, flowers, value pongs; danger weighted up around the dealer (dealer tai).
 - `riichi.ts` — yaku first (riichi for concealed hands; open hands need yakuhai / tanyao / flush / toitoi; dora only on top of a yaku), riichi vs dama, furiten-aware waits, push / fold against riichi, no kong into someone's riichi, red fives kept, keishiki tenpai late (noten payments), 九種九牌.
 - `american.ts` — card planner (`closest` / `distance`), Charleston passes and vote, exposures only when strictly closer, joker buy-back, defence against exposed players (tiles their still-possible card hands need).
 
-Measured 2026-11-06 with paired seeds (each seed twice, seats swapped; identical AIs tie exactly), 40 paired matches, against the earlier single shared AI: HK +17 / +29 points per match (normal / hard; 259–176 wins, fewer deal-ins), Taiwan +155 / +212, Riichi +10,568 / +12,798, American +127 / +128 (147–101 wins). The biggest single lever was **acceptance weight**: 0.25 (the old value) was far too high for 16-tile Taiwan hands (0.05 best: +155 / match; 0 → −12), and lower also helped HK (0.1) and Riichi (0.15). Levels: normal beats easy decisively everywhere (`ai.test.ts` pins it on fixed seeds); **hard is not measurably stronger than normal** against AI opponents — broader defence lost points in every variant (fast cheap AI hands make folding expensive), so hard = normal + the lookahead (Riichi hard vs normal over 80 paired matches: +651 / match, inside the noise). Rerun with `BENCH=1 npx vitest run src/core/ai/bench.test.ts` (`V`, `A`, `B`, `N` env).
+Measured 2026-11-06 with paired seeds (each seed twice, seats swapped; identical AIs tie exactly), 40 paired matches, against the earlier single shared AI: Taiwan +155 / +212 (normal / hard), Riichi +10,568 / +12,798, American +127 / +128 (147–101 wins). The biggest single lever was **acceptance weight**: 0.25 (the old value) was far too high for 16-tile Taiwan hands (0.05 best: +155 / match; 0 → −12), and lower also helped HK (0.1) and Riichi (0.15). Levels: normal beats easy decisively everywhere (`ai.test.ts` pins it on fixed seeds); **hard is not measurably stronger than normal** against AI opponents — broader defence lost points in every variant (fast cheap AI hands make folding expensive), so hard = normal + the lookahead (Riichi hard vs normal over 80 paired matches: +651 / match, inside the noise). Rerun with `BENCH=1 npx vitest run src/core/ai/bench.test.ts` (`V`, `A`, `B`, `N` env).
 
 ## Neural HK agent
 
@@ -93,6 +93,8 @@ Measured 2026-11-06 with paired seeds (each seed twice, seats swapped; identical
 - **Versions:** any change to a feature's meaning or position bumps `ENCODER_VERSION`; any slot change bumps `ACTION_SPACE_VERSION`. `loadHkNet` refuses mismatched files.
 - **TS ↔ PyTorch:** `hkNet.ts` and `training/hk/model.py` share tensor names (`tensorShapes`); `test_model.py` checks the two forward passes agree to 1e-4 on real observations. Change both together.
 - **Claims are simultaneous in training.** `HkVecEnv` asks every seat still deciding in a claim window from the same state and applies all answers after (asking one at a time would leak that the others passed). Aux heads use hidden hands as training labels only — never as inputs.
+- **Shipped levels** (2026-11-09, 512 paired matches each, ±6–9): points per match vs the final network / vs the HK heuristic — update 200 (easy) −78 / +50, 1000 (normal) −34 / +81, 5000 (hard) 0 / +89. 4500 and 5000 are tied (head-to-head −4 ± 5). The late checkpoints are not stronger against the heuristic than update 1000; they are against each other. The networks were trained on default HK rules only — other house rules are untested territory for them.
+- **The heuristic HK player lives in `nn/teacher.ts`**: it is the imitation teacher (`train.py`), the "vs heuristic" benchmark (`vec-env.ts`, `evaluate.py`) and the driver for tests. Don't import it from app code (it would be bundled).
 - **Training schedule:** `train.py` imitates the heuristic AI for `--bc-updates` (100), then PPO self-play against itself and its own snapshots only (no heuristic opponents, no imitation loss). Evaluation against the heuristic (every 100 updates, plus the update-100 imitation baseline) is measurement only; `progress.md` in the run directory is rebuilt from `metrics.jsonl` / `evals.jsonl` every 100 updates and after each evaluation. Training overlaps with collection (a background thread on its own CUDA stream; the acting copy is a bf16 CUDA-graphed `Inference`).
 - **Speed-ups that must stay result-identical:** `standardShanten` folds groups through a (pair, sets) → max-partials table and `usefulDraws` skips isolated draws (`hand.test.ts` compares both against the plain algorithm); `applyAction` shares `config` and `history` between states (never mutate either).
 - The discard log records `tsumogiri` (the engine sets it when the thrown tile is the one just drawn); the encoder reads it.
@@ -114,6 +116,7 @@ npm run typecheck    # tsc
 npm run build        # tsc && vite build
 npm run fix-lock     # rewrite mirror URLs in package-lock.json to registry.npmjs.org
 npm run deploy:rules # merge + deploy database.rules.json
+npm run ship-policies  # copy HK networks from training/runs/<run> into public/policies/hk
 npm run train:build  # bundle training/hk/env-server.ts → training/dist/hk-env.mjs
 python -m pytest training/hk -q   # (conda env `train`) TS ↔ PyTorch parity, int8 export, env protocol, a training smoke run
 python training/hk/train.py --name hk1   # train (5,000 updates ≈ 4 h here); --resume training/runs/hk1
@@ -134,4 +137,4 @@ FIREBASE_LIVE=1 npx vitest run src/net/firebase.live.test.ts   # rooms + rules a
 
 ## Status
 
-Done: engine + HK Old Style + trainer + real-table UI + Firebase rooms + variant framework (2026-11-05); Taiwanese 16-tile, Japanese Riichi, American (house card), tile-move animations, red-five and joker art (2026-11-06). Neural HK agent: encoding, action space, network, env bridge, trainer (imitation → PPO self-play), compact int8 policy files (2026-11-06; the full 5,000-update run not done yet). Open: the full training run and an in-game neural level, Riichi uma / oka and agari-yame, American blind passes and a loadable card, sound.
+Done: engine + HK Old Style + trainer + real-table UI + Firebase rooms + variant framework (2026-11-05); Taiwanese 16-tile, Japanese Riichi, American (house card), tile-move animations, red-five and joker art (2026-11-06). Neural HK agent: encoding, action space, network, env bridge, trainer (imitation → PPO self-play), compact int8 policy files, the 5,000-update run (hk1) and the three shipped levels as the HK computer players (2026-11-09). Open: a second training run (see training/README.md), Riichi uma / oka and agari-yame, American blind passes and a loadable card, sound.

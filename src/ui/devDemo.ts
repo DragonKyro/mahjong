@@ -8,6 +8,7 @@
 //   &variant=hk|taiwan|riichi|american, &seed=N for a fixed deal
 
 import { chooseAction } from '@/core/ai';
+import { teacherAction } from '@/core/nn/teacher';
 import { applyAction, createMatch, pendingSeats, type MatchState } from '@/core/engine';
 import { defaultRulesFor, type VariantId } from '@/core/variants';
 import { DEFAULT_HK_RULES } from '@/core/variants/hk';
@@ -70,7 +71,8 @@ export function runDemo(params: URLSearchParams): void {
   for (let n = 0; n < 20000 && !done(s, n); n++) {
     const seat = pendingSeats(s)[0];
     if (seat === undefined) break;
-    const a = chooseAction(s, seat);
+    // (HK is played by networks the app loads; the demo just needs some legal moves.)
+    const a = variant === 'hk' ? teacherAction(s, seat) : chooseAction(s, seat);
     if (!a) break;
     s = applyAction(s, a);
   }

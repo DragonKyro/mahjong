@@ -6,9 +6,13 @@ import { chooseAction } from '@/core/ai';
 import { applyAction, createMatch, pendingSeats, type MatchState } from '@/core/engine';
 import { defaultRulesFor, type VariantId } from '@/core/variants';
 import { DEFAULT_HK_RULES } from '@/core/variants/hk';
+import { useTeacherForHk } from '@/core/nn/teacher';
 import { useGame } from '@/store/gameStore';
 import { useNet } from '@/store/netStore';
 import { App } from './App';
+
+// HK computer players are networks the app loads; tests play HK with the heuristic instead.
+useTeacherForHk();
 
 function matchUntil(done: (s: MatchState) => boolean, seed = 12345, variant: VariantId = 'hk'): MatchState {
   let s = createMatch({

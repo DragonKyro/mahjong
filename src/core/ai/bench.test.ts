@@ -1,6 +1,7 @@
 // AI benchmark (skipped unless BENCH=1):
 //   BENCH=1 npx vitest run src/core/ai/bench.test.ts
 //   BENCH=1 V=riichi A=hard B=normal N=80 npx vitest run src/core/ai/bench.test.ts
+// (HK is played by networks: benchmark those with training/hk/evaluate.py.)
 // Paired seeds: every seed is played twice with the two sides' seats swapped,
 // so both get the same tiles — two identical AIs come out exactly even, and
 // the result measures play rather than deal luck. Prints points per match
@@ -40,6 +41,6 @@ function duel(variant: VariantId, a: AiLevel, b: AiLevel, n: number) {
 describe.skipIf(env('BENCH', '') !== '1')('AI benchmark', () => {
   it('levels', { timeout: 3_600_000 }, () => {
     const n = Number(env('N', '30'));
-    for (const v of env('V', 'hk,taiwan,riichi,american').split(',') as VariantId[]) duel(v, env('A', 'normal') as AiLevel, env('B', 'easy') as AiLevel, n);
+    for (const v of env('V', 'taiwan,riichi,american').split(',') as VariantId[]) duel(v, env('A', 'normal') as AiLevel, env('B', 'easy') as AiLevel, n);
   });
 });

@@ -1,69 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { chooseAction } from './index';
-import { applyAction, createMatch, pendingSeats, variantOf, type AiLevel, type MatchState } from '../engine';
-import { tileIds } from '../tiles';
-import { defaultRulesFor, type AnyRules, type VariantId } from '../variants';
-import { DEFAULT_HK_RULES, type HkRules } from '../variants/hk';
+import { applyAction, createMatch, pendingSeats } from '../engine';
+import { defaultRulesFor } from '../variants';
+import { handsWon, playOut } from './playout';
 
-function conserved(s: MatchState): boolean {
-  const all = tileIds(variantOf(s).tiles);
-  const h = s.hand;
-  const held = [
-    ...h.wall.slice(h.head, h.tail),
-    ...h.players.flatMap((p) => [...p.hand, ...p.bonus, ...p.discards, ...p.melds.flatMap((m) => m.tiles)]),
-  ].sort((a, b) => a - b);
-  return held.length === all.length && held.every((t, i) => t === all[i]);
-}
-
-/** Play a whole match with AI in every seat; returns the final state. */
-export function playOut(seed: number, levels: AiLevel[], rules: AnyRules = DEFAULT_HK_RULES, variant: VariantId = 'hk', maxActions = 20000): MatchState {
-  let s = createMatch({ variant, rules, seed, seats: levels.map((level, i) => ({ name: `AI ${i}`, ai: true, level })) });
-  for (let n = 0; n < maxActions && !s.over; n++) {
-    const seat = pendingSeats(s)[0]!;
-    const action = chooseAction(s, seat);
-    if (!action) throw new Error(`AI seat ${seat} had nothing to do in phase ${s.hand.phase}`);
-    const before = s.scores.reduce((a, b) => a + b, 0) + s.sticks * 1000;
-    s = applyAction(s, action);
-    if (s.hand.phase !== 'end' && !conserved(s)) throw new Error(`tiles not conserved after ${JSON.stringify(action)}`);
-    // Scores plus riichi sticks on the table are conserved.
-    const after = s.scores.reduce((a, b) => a + b, 0) + s.sticks * 1000;
-    if (after !== before) throw new Error(`points not conserved: ${before} → ${after} after ${JSON.stringify(action)}`);
-  }
-  if (!s.over) throw new Error('match did not finish');
-  return s;
-}
-
-const handsWon = (s: MatchState) => s.history.filter((h) => h.wins.length > 0).length;
-
-describe('AI', () => {
-  it.each(['easy', 'normal', 'hard'] as const)('plays whole HK %s matches legally', (level) => {
-    const s = playOut(11, [level, level, level, level]);
-    expect(s.history.length).toBeGreaterThanOrEqual(4);
-  });
-
-  it('wins a fair share of HK hands (the 3-faan minimum is reachable)', () => {
-    let hands = 0;
-    let wins = 0;
-    for (const seed of [1, 2, 3]) {
-      const s = playOut(seed, ['normal', 'normal', 'hard', 'hard']);
-      hands += s.history.length;
-      wins += handsWon(s);
-    }
-    expect(wins / hands).toBeGreaterThan(0.4);
-  });
-
-  it('copes with HK house rules (seven pairs, multi-win, full gun, chicken hands)', () => {
-    const rules: HkRules = { ...DEFAULT_HK_RULES, sevenPairs: true, multiWin: true, payment: 'fullGun', minFaan: 0, rounds: 1 };
-    expect(playOut(5, ['hard', 'normal', 'easy', 'hard'], rules).over).toBe(true);
-  });
-
-  it('is deterministic', () => {
-    const a = playOut(21, ['normal', 'hard', 'easy', 'normal']);
-    const b = playOut(21, ['normal', 'hard', 'easy', 'normal']);
-    expect(a.scores).toEqual(b.scores);
-    expect(a.seq).toBe(b.seq);
-  });
-
+// Hong Kong is played by trained networks (see ../nn); its heuristic player is
+// tested in ../nn/teacher.test.ts. These are the heuristic variants.
+describe('heuristic AIs', () => {
   it.each(['taiwan', 'riichi', 'american'] as const)('plays whole %s matches at every level', (variant) => {
     for (const [seed, levels] of [
       [31, ['easy', 'easy', 'easy', 'easy']],
@@ -90,8 +33,15 @@ describe('AI', () => {
     expect(wins / hands).toBeGreaterThan(rate);
   });
 
+  it('is deterministic', () => {
+    const a = playOut(21, ['normal', 'hard', 'easy', 'normal'], defaultRulesFor('taiwan'), 'taiwan');
+    const b = playOut(21, ['normal', 'hard', 'easy', 'normal'], defaultRulesFor('taiwan'), 'taiwan');
+    expect(a.scores).toEqual(b.scores);
+    expect(a.seq).toBe(b.seq);
+  });
+
   // Fixed seeds and deterministic AIs, so this is a stable check, not a sample.
-  it.each(['hk', 'taiwan', 'riichi', 'american'] as const)('%s: normal beats easy over paired seeds', (variant) => {
+  it.each(['taiwan', 'riichi', 'american'] as const)('%s: normal beats easy over paired seeds', (variant) => {
     let normal = 0;
     let easy = 0;
     for (let i = 0; i < 8; i++) {
@@ -107,5 +57,10 @@ describe('AI', () => {
       s.scores.forEach((x, k) => (mine.includes(k) ? (normal += x - start[k]!) : (easy += x - start[k]!)));
     }
     expect(normal).toBeGreaterThan(easy);
+  });
+
+  it('refuses to play a neural variant without its network', () => {
+    const s = createMatch({ variant: 'hk', rules: defaultRulesFor('hk'), seed: 1, seats: [0, 1, 2, 3].map((i) => ({ name: `AI ${i}`, ai: true, level: 'hard' as const })) });
+    expect(() => chooseAction(s, pendingSeats(s)[0]!)).toThrow(/network isn't loaded/);
   });
 });

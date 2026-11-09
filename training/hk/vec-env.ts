@@ -21,9 +21,9 @@
 // (episode 'hand') or at the match end (episode 'match'). rankReward[rank] is
 // added at the match end.
 
-import { chooseAction } from '@/core/ai';
 import { applyAction, handCounts, isFinalHand, pendingSeats, setsNeeded, createMatch, type Action, type AiLevel, type MatchState } from '@/core/engine';
 import { shanten, waits } from '@/core/hand';
+import { teacherAction } from '@/core/nn/teacher';
 import { decodeSlot, legalMask, NUM_SLOTS, slotOf } from '@/core/nn/hkActions';
 import { OBS_DIM, observe } from '@/core/nn/hkEncode';
 import { normalizeHkRules, type HkRules } from '@/core/variants/hk';
@@ -307,7 +307,7 @@ export class HkVecEnv {
       for (const seat of pendingSeats(s)) {
         const who = env.who[seat]!;
         if (!isNetwork(who)) {
-          deferred.push(chooseAction(s, seat)!);
+          deferred.push(teacherAction(s, seat)!);
           continue;
         }
         const mask = legalMask(s, seat);
@@ -320,7 +320,7 @@ export class HkVecEnv {
             continue;
           }
         }
-        const hint = who === 'teacher' ? slotOf(s, chooseAction(s, seat)!) : -1;
+        const hint = who === 'teacher' ? slotOf(s, teacherAction(s, seat)!) : -1;
         reqs.push({ seat, mask, hint, obs: observe(s, seat, mask) });
       }
       if (reqs.length === 0) {

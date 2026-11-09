@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { chooseAction } from '@/core/ai';
 import { pendingSeats } from '@/core/engine';
+import { teacherAction } from '@/core/nn/teacher';
 import { Rng } from '@/core/rng';
 import { NUM_SLOTS, legalMask, slotOf } from '@/core/nn/hkActions';
 import { OBS_DIM, observe } from '@/core/nn/hkEncode';
@@ -62,7 +62,7 @@ describe('HK vec env', () => {
     for (let step = 0; step < 300; step++) {
       b.env.forEach((e, j) => {
         const s = env.stateOf(e)!;
-        expect(b.hint[j]).toBe(slotOf(s, chooseAction(s, b.seat[j]!)!));
+        expect(b.hint[j]).toBe(slotOf(s, teacherAction(s, b.seat[j]!)!));
       });
       b = env.step(b.hint);
     }

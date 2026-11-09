@@ -6,9 +6,11 @@
 
 import { create } from 'zustand';
 import { chooseAction } from '@/core/ai';
+import { HINT_LEVEL, NEURAL_VARIANTS, neuralLevels, neuralPlayer } from '@/core/ai/neural';
 import { createMatch, pendingSeats, tryApply, type Action, type AiLevel, type MatchState } from '@/core/engine';
 import { freshSeed } from '@/core/rng';
 import { defaultRulesFor, normalizeRulesFor, type AnyRules, type VariantId } from '@/core/variants';
+import { loadPolicy } from './policies';
 
 export interface SoloSetup {
   variant: VariantId;
@@ -33,6 +35,10 @@ interface GameStore {
   speed: Speed;
   /** Show waits and a suggested discard. */
   hints: boolean;
+  /** Computer players that are networks (HK): loading them, ready, or failed (retrying). */
+  aiStatus: 'ready' | 'loading' | 'failed';
+  /** Bumped whenever a network finishes loading, so components that show hints re-render. */
+  policiesVersion: number;
   notice: string | null;
   soloSetup: SoloSetup;
   startSolo: (setup: SoloSetup) => void;
@@ -104,6 +110,8 @@ export const useGame = create<GameStore>((set, get) => ({
   aiDriver: false,
   speed: loadSpeed(),
   hints: loadHints(),
+  aiStatus: 'ready',
+  policiesVersion: 0,
   notice: null,
   soloSetup: loadSetup(),
 
@@ -149,6 +157,61 @@ export const useGame = create<GameStore>((set, get) => ({
   leave: () => set({ match: null, mode: null, mySeat: null, aiDriver: false, notice: null }),
 }));
 
+// ------------------------------------------------------------ loading the networks
+
+const RETRY_MS = { required: 4000, optional: 30000 };
+const watching = new Set<string>();
+const failedAt = new Map<string, number>();
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Start loading whatever networks this match needs: the computer seats' levels
+ * (when this device drives them) and the hint network (when hints are on). A
+ * failed load is retried; one for a computer seat blocks its moves and shows
+ * a banner, one for hints is quietly skipped.
+ */
+function prepare(): void {
+  const { match, aiDriver, hints, mySeat, aiStatus } = useGame.getState();
+  const variant = match?.config.variant;
+  if (!match || match.over || !variant || !NEURAL_VARIANTS.has(variant)) {
+    if (aiStatus !== 'ready') useGame.setState({ aiStatus: 'ready' });
+    return;
+  }
+  const required = aiDriver ? neuralLevels(match.config) : [];
+  const wanted = [...required.map((level) => ({ level, required: true })), ...(hints && mySeat !== null ? [{ level: HINT_LEVEL, required: false }] : [])];
+  let missing = false;
+  let failed = false;
+  for (const { level, required: must } of wanted) {
+    if (neuralPlayer(variant, level)) continue;
+    const key = `${variant}:${level}`;
+    const lastFail = failedAt.get(key);
+    const waitMs = must ? RETRY_MS.required : RETRY_MS.optional;
+    if (lastFail !== undefined && Date.now() - lastFail < waitMs) {
+      if (must) failed = true;
+      continue;
+    }
+    if (must) missing = true;
+    if (watching.has(key)) continue;
+    watching.add(key);
+    loadPolicy(variant, level).then(
+      () => {
+        watching.delete(key);
+        failedAt.delete(key);
+        useGame.setState((st) => ({ policiesVersion: st.policiesVersion + 1 }));
+      },
+      () => {
+        watching.delete(key);
+        failedAt.set(key, Date.now());
+        if (retryTimer) clearTimeout(retryTimer);
+        retryTimer = setTimeout(prepare, waitMs + 50);
+        prepare();
+      },
+    );
+  }
+  const status = failed ? 'failed' : missing ? 'loading' : 'ready';
+  if (status !== aiStatus) useGame.setState({ aiStatus: status });
+}
+
 // ------------------------------------------------------------ AI driver
 
 const DELAYS: Record<Speed, { act: number; claim: number; end: number }> = {
@@ -173,6 +236,8 @@ function schedule(): void {
   timer = null;
   const seat = pendingSeats(match).find((s) => match.config.seats[s]?.ai);
   if (seat === undefined) return;
+  // A network that is still loading: prepare() has it in hand, and its arrival re-runs this.
+  if (NEURAL_VARIANTS.has(match.config.variant) && !neuralPlayer(match.config.variant, match.config.seats[seat]?.level ?? 'normal')) return;
   const d = DELAYS[speed];
   const delay = match.hand.phase === 'act' ? d.act : match.hand.phase === 'claim' ? d.claim : d.end;
   const seq = match.seq;
@@ -188,4 +253,7 @@ function schedule(): void {
   }, delay);
 }
 
-useGame.subscribe(schedule);
+useGame.subscribe(() => {
+  prepare();
+  schedule();
+});

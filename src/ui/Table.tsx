@@ -180,6 +180,7 @@ function OtherHand({ s, seat, reveal }: { s: MatchState; seat: number; reveal: b
 function MyHand({ s, seat, mode, picked, setPicked }: { s: MatchState; seat: number; mode: Mode; picked: TileId[]; setPicked: (t: TileId[]) => void }) {
   const act = useGame((x) => x.act);
   const hints = useGame((x) => x.hints);
+  useGame((x) => x.policiesVersion); // the suggested discard comes from a network that loads in the background
   const face = useFace(s);
   const p = s.hand.players[seat]!;
   const h = s.hand;

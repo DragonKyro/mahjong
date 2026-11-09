@@ -18,6 +18,13 @@ const LEVELS: { id: AiLevel; label: string; blurb: string }[] = [
   { id: 'hard', label: 'Hard', blurb: 'Also defends against ready hands' },
 ];
 
+// Hong Kong is played by trained neural networks; the levels are snapshots from one training run.
+const HK_LEVELS: typeof LEVELS = [
+  { id: 'easy', label: 'Easy', blurb: 'Early-training network, still beatable' },
+  { id: 'normal', label: 'Normal', blurb: 'Mid-training network, builds good hands' },
+  { id: 'hard', label: 'Hard', blurb: 'Fully trained network, big hands and few deal-ins' },
+];
+
 const SHOWCASE = [33, 32, 31, 27, 0, 13, 26, 34];
 
 export function Home({ go }: { go: (p: Page) => void }) {
@@ -103,7 +110,7 @@ function SoloPanel({ variant }: { variant: VariantId }) {
                   setLevels(next);
                 }}
               >
-                {LEVELS.map((l) => (
+                {(variant === 'hk' ? HK_LEVELS : LEVELS).map((l) => (
                   <option key={l.id} value={l.id}>
                     {l.label} — {l.blurb}
                   </option>
