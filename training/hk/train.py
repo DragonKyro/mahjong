@@ -88,7 +88,7 @@ def parse_args(argv=None):
     p.add_argument("--eval-matches", type=int, default=64)
     p.add_argument("--ref-net", default=os.path.join(ROOT, "public", "policies", "hk", "hard.hknet"),
                    help="the benchmark: a network file the current one plays every --eval-every updates ('' = off); default the shipped hard level")
-    p.add_argument("--ref-matches", type=int, default=256, help="paired matches per benchmark (256 ≈ ±7 points per match)")
+    p.add_argument("--ref-matches", type=int, default=512, help="paired matches per benchmark (512 ≈ ±7.5 points per match between networks)")
     p.add_argument("--export-every", type=int, default=100)
     p.add_argument("--ckpt-every", type=int, default=50)
     p.add_argument("--precision", choices=["bf16", "fp16", "tf32"], default="bf16")
@@ -1031,8 +1031,12 @@ class Trainer:
                 k = min(5, len(scored) // 2)
                 early = sum(e["points_per_match"] for e in scored[:k]) / k
                 late = sum(e["points_per_match"] for e in scored[-k:]) / k
-                out += [f"Trend: the last {k} benchmarks average {late:+.1f}, the first {k} averaged {early:+.1f} "
-                        f"({'improving' if late > early else 'not improving'}; a difference under ~{2 * 7 / k ** 0.5:.0f} is within noise)."]
+                ses = [e["se"] for e in scored if isinstance(e.get("se"), (int, float)) and e["se"] == e["se"]]
+                se = (sum(x * x for x in ses) / len(ses)) ** 0.5 if ses else 7.5
+                noise = 2 * se * (2 / k) ** 0.5  # two standard errors of a difference of two k-averages
+                verdict = "improving" if late - early > noise else "worse" if early - late > noise else "no clear change"
+                out += [f"Trend: the last {k} benchmarks average {late:+.1f}, the first {k} averaged {early:+.1f} — {verdict} "
+                        f"(differences under ~{noise:.0f} are within noise)."]
             out += [
                 "",
                 f"{a.ref_matches} paired matches each (every deal twice, seats swapped; the same deals every time, so rows compare like with like). "

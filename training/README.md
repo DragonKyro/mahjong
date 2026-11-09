@@ -94,7 +94,7 @@ The network only ever sees what its seat could see at a real table.
    - **Weight averaging (`--ema 0.99`):** an exponential moving average of the weights over self-play updates (a window of roughly 100 updates). It is exported as `policies/update_NNNNN_ema.hknet` beside each snapshot, measured against the current network at every evaluation, and kept in checkpoints.
    - **Cost:** with these defaults an update takes several times longer than hk1's ~3 s. Pick `--updates` with that in mind; I'd measure the first few updates before committing to a length.
 3. **Evaluation (measurement only; it never feeds training).**
-   - **The benchmark: against the shipped hard level** (`--ref-net`, default `public/policies/hk/hard.hknet`). Every 100 updates, 256 paired matches on the same deals each time. A warm start also measures its starting network, which should sit at about 0.
+   - **The benchmark: against the shipped hard level** (`--ref-net`, default `public/policies/hk/hard.hknet`). Every 100 updates, 512 paired matches (about ±7.5 points per match) on the same deals each time. A warm start also measures its starting network, which should sit at about 0.
      - The headline in `progress.md` is points per match ahead of hard, ± one standard error, plus the trend and the best update so far.
      - The best update's file is copied to `policies/best.hknet`.
    - Every 100 updates: 64 paired-seed matches (each seed twice, seats swapped) against the heuristic AI, and against the update-100 imitation snapshot. The second measures how far self-play has moved past the starting point.
