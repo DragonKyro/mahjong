@@ -553,6 +553,14 @@ class Trainer:
         print(f"starting from {path} (update {ck['update']}); imitation skipped")
 
     def _load(self) -> None:
+        # What the run was started with that the command line of a resume doesn't repeat: a warm
+        # start (and so no imitation updates, which the schedules count from).
+        saved = os.path.join(self.run_dir, "config.json")
+        if os.path.exists(saved):
+            with open(saved, encoding="utf-8") as f:
+                was = json.load(f)
+            self.init_source = was.get("init")
+            self.args.bc_updates = was["args"]["bc_updates"]
         ck = torch.load(os.path.join(self.run_dir, "ckpt", "latest.pt"), map_location="cpu", weights_only=False)
         self.cfg = NetConfig(**ck["net"])
         self.aux_dim = ck["aux_dim"]
