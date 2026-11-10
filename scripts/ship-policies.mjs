@@ -1,7 +1,7 @@
 // Copies the HK networks the game ships from a training run into public/policies/hk.
 //
 //   npm run ship-policies                       # the levels below, from training/runs/hk1
-//   npm run ship-policies -- --run hk2 --easy 300 --normal 1500 --hard 4500
+//   npm run ship-policies -- --run <run> --easy 300 --normal 1500 --hard 4500
 //
 // Chosen from the checkpoint ladder (paired seeds, 512 matches each; points per
 // match against the final network): update 200 −78, 1000 −34, 5000 0 — even

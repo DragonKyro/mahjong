@@ -108,6 +108,8 @@ The network only ever sees what its seat could see at a real table.
    - On `--resume`, the restored network is evaluated right away.
    - With `--ema`, the averaged weights play the current ones.
 
+**Tried once and not shipped — run hk2:** a warm start from hk1 with the defaults above. Updates 1000–2000 averaged about −20 points per match against the shipped hard level. By the end it was back to level: +0.7 ± 2.6 over 4,096 fresh-deal matches. The defaults' entropy bonus and learning rate are tuned for training from scratch, and they pushed a converged policy back into exploring. A warm start wants gentler schedules (for example `--lr 1e-4 --lr-final 5e-5 --ent 0.003`), and probably the hard level kept in the opponent pool.
+
 **Warm start (`--init-from training/runs/hk1/ckpt/latest.pt`):** begin from a finished run instead of from imitation.
 - It takes the run's weights, its update-100 imitation snapshot (for the "vs imitation" evaluation) and its opponent pool, and skips imitation.
 - A network trained without a danger head gains one whose inputs to the policy start at zero, so it begins playing exactly like the source and learns to use the head.
