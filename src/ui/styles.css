@@ -314,11 +314,12 @@ main {
     transform: translateY(-5px);
   }
 }
+/* The game picker: one card per variant. */
 .variants {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0.8rem;
-  margin-bottom: 1.2rem;
+  gap: 1rem;
+  margin-bottom: 1.4rem;
 }
 .variant {
   font: inherit;
@@ -326,12 +327,39 @@ main {
   text-align: left;
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
-  padding: 0.9rem 1rem;
-  border-radius: 12px;
+  gap: 0.2rem;
+  padding: 0 0 1rem;
+  border-radius: 14px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   background: rgba(255, 255, 255, 0.04);
+  overflow: hidden;
   cursor: pointer;
+  transition:
+    transform 0.15s ease,
+    border-color 0.15s ease,
+    background 0.15s ease;
+}
+.variant:hover,
+.variant:focus-visible {
+  transform: translateY(-3px);
+  border-color: var(--accent);
+  background: rgba(226, 176, 74, 0.1);
+}
+.variant > span:not(.art) {
+  padding: 0 1rem;
+}
+.variant .art {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 5px;
+  height: 104px;
+  margin-bottom: 0.6rem;
+  --tw: 38px;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.08), transparent 60%),
+    linear-gradient(160deg, #1d6a46, #145236 55%, #0f4029);
+  box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.3);
 }
 .variant .zh {
   font-size: 1.3rem;
@@ -342,18 +370,72 @@ main {
 }
 .variant .status {
   font-size: 0.8rem;
-  color: var(--muted);
-}
-.variant.playable .status {
   color: var(--accent);
 }
-.variant.on {
-  border-color: var(--accent);
-  background: rgba(226, 176, 74, 0.12);
+.variant .blurb {
+  margin-top: 0.3rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  line-height: 1.4;
+}
+.join-panel {
+  max-width: 640px;
+  margin: 0 auto;
+}
+.join-panel h2 {
+  font-size: 1.05rem;
+}
+.join {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.7rem;
+}
+.join input {
+  flex: 1;
+  min-width: 0;
+}
+.join input.code {
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  font-weight: 700;
+}
+
+/* A picked game's settings. */
+.setup {
+  max-width: 980px;
+}
+.setup-bar {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+.setup-head {
+  margin-bottom: 1.2rem;
+}
+.setup-head h1 {
+  margin: 0.4rem 0 0.4rem;
+  font-size: clamp(1.6rem, 4vw, 2.2rem);
+}
+.setup-head h1 .cjk {
+  color: var(--accent);
+}
+.setup-head p {
+  margin: 0;
+  color: var(--muted);
+}
+.setup-head ul {
+  margin: 0.6rem 0 0;
+  padding-left: 1.1rem;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+.setup-head li {
+  margin: 0.2rem 0;
 }
 .play-panels {
   display: grid;
-  grid-template-columns: 1.1fr 1fr 1fr;
+  grid-template-columns: 1.2fr 1fr;
   gap: 1rem;
   align-items: start;
 }
@@ -377,31 +459,12 @@ main {
 .online .btn.primary {
   width: 100%;
 }
-.join {
-  display: flex;
-  gap: 0.5rem;
-  margin-top: 0.7rem;
-}
-.join input {
-  flex: 1;
-  text-transform: uppercase;
-  letter-spacing: 0.15em;
-  font-weight: 700;
-}
-.about ul,
 .planned ul {
   padding-left: 1.1rem;
   margin: 0.4rem 0;
 }
-.about li,
 .planned li {
   margin: 0.25rem 0;
-}
-.links {
-  display: flex;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-  margin-top: 0.8rem;
 }
 .planned .cols {
   display: grid;
@@ -510,6 +573,9 @@ button.tile:disabled {
   gap: 10px;
   padding: 8px;
   height: calc(100vh - 52px);
+  /* Nothing on the table may grow the page: a scroll bar that comes and goes
+     re-centres the board and jerks it sideways. */
+  overflow: clip;
 }
 .board-wrap {
   min-width: 0;
@@ -672,7 +738,9 @@ button.tile:disabled {
   --tw: 2.5cqmin;
 }
 
-/* Hands. */
+/* Hands. A hand is centred on the tiles it holds between turns, so it stays
+   put through a draw and a discard: the drawn tile (set apart) or the extra
+   tile after a call sticks out to the right. */
 .hand-row {
   position: absolute;
   left: 50%;
@@ -680,17 +748,23 @@ button.tile:disabled {
   display: flex;
   align-items: flex-end;
   white-space: nowrap;
+  gap: var(--gap);
+}
+.hand-row .tile.drawn {
+  margin-left: var(--drawn-gap);
+  margin-right: calc(-1 * (var(--tw) + var(--gap) + var(--drawn-gap)));
+}
+.hand-row.extra {
+  transform: translateX(calc(-50% + (var(--tw) + var(--gap)) / 2));
 }
 .hand-row.other {
   top: 94.2%;
   --tw: min(2.6cqmin, calc(40cqmin / var(--hand-n, 14)));
-  gap: 0.08cqmin;
+  --gap: 0.08cqmin;
+  --drawn-gap: 0.8cqmin;
 }
 .hand-row.other .tile.stand {
   height: calc(var(--tw) * 1.2);
-}
-.hand-row.other .tile.drawn {
-  margin-left: 0.8cqmin;
 }
 .side.r0 .hand-row.other {
   --tw: 3.4cqmin;
@@ -700,11 +774,9 @@ button.tile:disabled {
 .hand-row.mine {
   bottom: 1.3%;
   --tw: min(4.6cqmin, calc(65cqmin / var(--hand-n, 14)));
-  gap: 0.15cqmin;
+  --gap: 0.15cqmin;
+  --drawn-gap: 1.4cqmin;
   pointer-events: auto;
-}
-.hand-row.mine .tile.drawn {
-  margin-left: 1.4cqmin;
 }
 .hand-row.mine.turn .tile:hover,
 .hand-row.mine .tile.selected {
@@ -1617,11 +1689,12 @@ table.faan.wide td.num {
 /* ------------------------------------------------------------ narrow screens */
 
 @media (max-width: 1000px) {
-  .play-panels,
+  .variants {
+    grid-template-columns: 1fr 1fr;
+  }
   .lobby-grid {
     grid-template-columns: 1fr 1fr;
   }
-  .play-panels .about,
   .lobby-grid .chat-panel {
     grid-column: span 2;
   }
@@ -1644,17 +1717,17 @@ table.faan.wide td.num {
   }
 }
 @media (max-width: 680px) {
-  .variants {
-    grid-template-columns: 1fr 1fr;
-  }
   .play-panels,
   .lobby-grid,
   .planned .cols {
     grid-template-columns: 1fr;
   }
-  .play-panels .about,
   .lobby-grid .chat-panel {
     grid-column: auto;
+  }
+  .variant .art {
+    height: 80px;
+    --tw: 30px;
   }
   .topbar .en {
     display: none;
@@ -1666,7 +1739,8 @@ table.faan.wide td.num {
 @container (max-width: 560px) {
   .hand-row.mine {
     --tw: min(6.3cqmin, calc(88cqmin / var(--hand-n, 14)));
-    gap: 0.1cqmin;
+    --gap: 0.1cqmin;
+    --drawn-gap: 0.9cqmin;
   }
   .badge {
     font-size: max(8px, 1.9cqmin);
@@ -1686,9 +1760,6 @@ table.faan.wide td.num {
   }
   .badge.b1 {
     bottom: 11.5%;
-  }
-  .hand-row.mine .tile.drawn {
-    margin-left: 0.9cqmin;
   }
   .badge.b0 {
     display: none;

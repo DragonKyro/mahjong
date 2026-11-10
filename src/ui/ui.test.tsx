@@ -39,10 +39,20 @@ afterEach(() => {
 });
 
 describe('screens', () => {
-  it('home lists the variants', () => {
+  it('home: pick a game, then set it up', () => {
     render(<App />);
     for (const name of ['Hong Kong Old Style', 'Taiwanese 16-tile', 'Japanese Riichi', 'American']) expect(screen.getAllByText(name).length).toBeGreaterThan(0);
+    expect(screen.queryByRole('button', { name: 'Deal the tiles' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /Japanese Riichi/ }));
     expect(screen.getByRole('button', { name: 'Deal the tiles' })).toBeTruthy();
+    expect(screen.getAllByRole('option').map((o) => o.textContent)).toContain('Medium');
+    // The rules page opens on the picked game and comes back to its settings.
+    fireEvent.click(screen.getByRole('button', { name: 'Rules & scoring' }));
+    expect(screen.getByRole('button', { name: /Japanese Riichi/ }).className).toContain('on');
+    fireEvent.click(screen.getByRole('button', { name: '← Back' }));
+    expect(screen.getByRole('button', { name: 'Deal the tiles' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '← Back' }));
+    expect(screen.queryByRole('button', { name: 'Deal the tiles' })).toBeNull();
   });
 
   it('rules and trainer pages', () => {

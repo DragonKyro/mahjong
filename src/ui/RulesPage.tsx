@@ -13,8 +13,8 @@ import { TileRow } from './Tile';
 
 const num = (n: number) => n.toLocaleString('en-US');
 
-export function RulesPage({ back }: { back: () => void }) {
-  const [tab, setTab] = useState<VariantId>('hk');
+export function RulesPage({ initial = 'hk', back }: { initial?: VariantId; back: () => void }) {
+  const [tab, setTab] = useState<VariantId>(initial);
   return (
     <div className="rules-page">
       <div className="rules-tabs">

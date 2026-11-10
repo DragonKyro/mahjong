@@ -2,7 +2,7 @@
 
 Mahjong in the browser, hosted on GitHub Pages: **https://dragonkyro.github.io/mahjong/**
 
-- **Play the computer** — three AI opponents (easy / normal / hard), each seat set separately. **Hong Kong is played by neural networks** trained by self-play (three snapshots from one run, see below); the other variants each have a heuristic AI tuned to its rules: Taiwan plays for speed, Riichi plays yaku / riichi / push-fold, American plans toward the card.
+- **Play the computer** — pick a game on the home screen, then set it up: three AI opponents (Easy / Medium / Hard), each seat set separately, and the house rules. **Hong Kong is played by neural networks** trained by self-play (three snapshots from one run, see below); the other variants each have a heuristic AI tuned to its rules: Taiwan plays for speed, Riichi plays yaku / riichi / push-fold, American plans toward the card.
 - **Play with friends** — online rooms with a 4-letter code or an invite link. Empty seats can be filled with computer players. Rooms live in a Firebase Realtime Database; no accounts.
 - **Train** — a discard trainer: pick the tile that keeps a 14-tile hand closest to winning, then see every discard ranked by shanten and useful tiles.
 
@@ -68,7 +68,7 @@ npm run build        # → dist/
 
 - **Schedule:** 100 updates imitating the heuristic AI, then PPO self-play against itself and its own past snapshots.
 - **No peeking:** it sees only its own seat's view, never the wall or other hands (tested).
-- **In the game:** the three difficulty levels are snapshots of the run (training updates 200, 1000 and 5000), each a 1.85 MB int8 file in [public/policies/hk/](public/policies/hk). They load on demand in the browser (`npm run ship-policies` copies them from a run). Measured against each other and the old heuristic AI, with paired deals (points per match; ±8): hard beats the heuristic by about +89, normal by +81, easy by +50, and each level is 35–45 points behind the next.
+- **In the game:** the three difficulty levels are snapshots of the run (training updates 200, 1000 and 5000), each a 1.85 MB int8 file in [public/policies/hk/](public/policies/hk). They load on demand in the browser (`npm run ship-policies` copies them from a run). Measured against each other and the old heuristic AI, with paired deals (points per match; ±8): hard beats the heuristic by about +89, medium by +81, easy by +50, and each level is 35–45 points behind the next.
 - **Suggested discards** (the hint) come from the hard network.
 - **Rules:** the networks were trained on the default HK rules; with house rules changed they stay legal but are playing outside what they learned.
 

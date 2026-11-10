@@ -14,6 +14,7 @@ import {
   charlestonAsk,
   claimOptions,
   isFuriten,
+  levelLabel,
   liveLeft,
   pendingSeats,
   seatWind,
@@ -162,10 +163,11 @@ function MeldView({ m, face }: { m: Meld; face: (t: TileId) => { kind: Kind; red
 function OtherHand({ s, seat, reveal }: { s: MatchState; seat: number; reveal: boolean }) {
   const p = s.hand.players[seat]!;
   const face = useFace(s);
-  const drawing = s.hand.phase === 'act' && s.hand.turn === seat && s.hand.drawn !== null;
+  const holding = s.hand.phase === 'act' && s.hand.turn === seat;
+  const drawing = holding && s.hand.drawn !== null;
   const tiles = drawing ? [...p.hand.filter((t) => t !== s.hand.drawn), s.hand.drawn!] : p.hand;
   return (
-    <div className={`hand-row other ${reveal ? 'open' : ''}`}>
+    <div className={`hand-row other ${reveal ? 'open' : ''} ${holding && !drawing && !reveal ? 'extra' : ''}`}>
       {tiles.map((t, i) =>
         reveal ? (
           <Tile key={t} {...face(t)} />
@@ -192,6 +194,8 @@ function MyHand({ s, seat, mode, picked, setPicked }: { s: MatchState; seat: num
   useEffect(() => setSelected(null), [s.seq]);
   const drawn = myTurn ? h.drawn : null;
   const tiles = drawn !== null ? [...p.hand.filter((t) => t !== drawn), drawn] : p.hand;
+  // Holding the tile to discard, but none set apart (after a call, the dealer's first turn): see .hand-row.extra.
+  const extra = h.phase === 'act' && h.turn === seat && drawn === null;
   const hint = myTurn && hints && mode.kind === 'normal' ? suggestDiscard(s, seat) : null;
   const hintTile = hint === null ? null : tiles.find((t) => kindOf(t) === hint && (!opts.allowed || opts.allowed.includes(t)));
 
@@ -234,7 +238,7 @@ function MyHand({ s, seat, mode, picked, setPicked }: { s: MatchState; seat: num
   });
 
   return (
-    <div className={`hand-row mine ${myTurn || mode.kind === 'charleston' ? 'turn' : ''} ${mode.kind}`}>
+    <div className={`hand-row mine ${myTurn || mode.kind === 'charleston' ? 'turn' : ''} ${mode.kind} ${extra ? 'extra' : ''}`}>
       {tiles.map((t, i) => {
         const ok = canPick(t);
         return (
@@ -311,7 +315,7 @@ function Badge({ s, seat, rel }: { s: MatchState; seat: number; rel: number }) {
         <span className="meta">
           {w === 0 && <span className="tag dealer">莊 Dealer</span>}
           {s.hand.riichi[seat] && <span className="tag riichi">リーチ</span>}
-          {cfg.ai && <span className="tag">AI · {cfg.level}</span>}
+          {cfg.ai && <span className="tag">AI · {cfg.level ? levelLabel(cfg.level) : ''}</span>}
           {offline && <span className="tag warn">offline</span>}
         </span>
         <span className="score">

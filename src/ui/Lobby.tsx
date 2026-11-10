@@ -1,7 +1,7 @@
 // The online room before (and between) matches: seats, house rules, chat.
 
 import { useState } from 'react';
-import type { AiLevel } from '@/core/engine';
+import { AI_LEVELS, levelLabel, type AiLevel } from '@/core/engine';
 import { VARIANTS, normalizeRulesFor, type VariantId } from '@/core/variants';
 import { roomLink, type LobbySeat } from '@/net/room';
 import { AI_NAMES } from '@/store/gameStore';
@@ -76,7 +76,7 @@ export function Lobby() {
                 )}
                 {s.kind === 'ai' && (
                   <>
-                    <b>{s.name}</b> <span className="tag">computer · {s.level}</span>
+                    <b>{s.name}</b> <span className="tag">computer · {levelLabel(s.level)}</span>
                   </>
                 )}
                 {s.kind === 'open' && <span className="muted">Open seat</span>}
@@ -85,9 +85,11 @@ export function Lobby() {
                 {isHost && s.kind !== 'human' && (
                   <select value={s.kind === 'ai' ? s.level : 'open'} onChange={(e) => setSeat(i, e.target.value)} aria-label={`Seat ${i + 1}`}>
                     <option value="open">Open for a friend</option>
-                    <option value="easy">Computer — easy</option>
-                    <option value="normal">Computer — normal</option>
-                    <option value="hard">Computer — hard</option>
+                    {AI_LEVELS.map((l) => (
+                      <option key={l.id} value={l.id}>
+                        Computer — {l.label}
+                      </option>
+                    ))}
                   </select>
                 )}
                 {isHost && s.kind === 'human' && s.uuid !== net.uuid && (

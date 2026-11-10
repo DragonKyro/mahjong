@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import type { VariantId } from '@/core/variants';
 import { roomCodeFromUrl, savedName } from '@/net/room';
 import { useGame } from '@/store/gameStore';
 import { useNet } from '@/store/netStore';
@@ -20,6 +21,8 @@ function pageFromUrl(): Page {
 
 export function App() {
   const [page, setPage] = useState<Page>(pageFromUrl);
+  // The game picked on the home screen (null: the picker). Kept here so the rules page and a finished match come back to it.
+  const [variant, setVariant] = useState<VariantId | null>(null);
   const match = useGame((s) => s.match);
   const mode = useGame((s) => s.mode);
   const leaveSolo = useGame((s) => s.leave);
@@ -39,6 +42,7 @@ export function App() {
     if (mode === 'solo' && match && !confirm('Leave the current match?')) return;
     if (mode === 'solo') leaveSolo();
     if (inRoom) net.leaveRoom();
+    if (p === 'home') setVariant(null);
     setPage(p);
   };
 
@@ -70,9 +74,9 @@ export function App() {
       <main>
         {view === 'table' && <Table />}
         {view === 'lobby' && <Lobby />}
-        {view === 'home' && <Home go={setPage} />}
+        {view === 'home' && <Home variant={variant} pick={setVariant} go={setPage} />}
         {view === 'train' && <Training />}
-        {view === 'rules' && <RulesPage back={() => setPage('home')} />}
+        {view === 'rules' && <RulesPage initial={variant ?? 'hk'} back={() => setPage('home')} />}
       </main>
     </div>
   );

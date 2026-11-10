@@ -31,6 +31,14 @@ import {
 
 export type AiLevel = 'easy' | 'normal' | 'hard';
 
+/** The difficulty levels as players see them ('normal' shows as Medium; saved setups and rooms keep the ids). */
+export const AI_LEVELS: readonly { id: AiLevel; label: string }[] = [
+  { id: 'easy', label: 'Easy' },
+  { id: 'normal', label: 'Medium' },
+  { id: 'hard', label: 'Hard' },
+];
+export const levelLabel = (level: AiLevel): string => AI_LEVELS.find((l) => l.id === level)?.label ?? level;
+
 export interface SeatConfig {
   name: string;
   ai: boolean;
