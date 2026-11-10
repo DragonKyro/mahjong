@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Build output (training/dist/ too: the bundled env server)
+dist/
+*.tsbuildinfo
+.vite/
+coverage/
+
+# Firebase CLI state and the merged rules file scripts/merge-db-rules.mjs writes
+.firebase/
+firebase-debug.log
+database-debug.log
+
+# Training runs, checkpoints and Python caches
+training/runs/
+*.pt
+__pycache__/
+.pytest_cache/
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Claude / agent artifacts
+.claude/

@@ -1,0 +1,36 @@
+{
+  "name": "mahjong",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Mahjong for the browser — Hong Kong Old Style (廣東牌) vs AI, online rooms over Firebase, and a discard trainer. Also Taiwanese 16-tile, Japanese Riichi and American.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc",
+    "fix-lock": "node scripts/fix-lockfile.mjs",
+    "train:build": "vite build --config training/vite.config.ts",
+    "ship-policies": "node scripts/ship-policies.mjs",
+    "deploy:rules": "npx -y firebase-tools@latest deploy --only database"
+  },
+  "dependencies": {
+    "firebase": "^12.19.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zustand": "^4.5.5"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.0.1",
+    "@types/node": "^22.7.4",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.2",
+    "jsdom": "^25.0.1",
+    "typescript": "^5.6.2",
+    "vite": "^5.4.8",
+    "vitest": "^2.1.2"
+  }
+}
